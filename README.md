@@ -1,107 +1,74 @@
-# Laser Engraving Optimizer
+# Laser Engraving Optimizer — calibrated grayscale edition
 
-Laser engraving often suffers from limitations imposed by hardware, materials, and laser control software, resulting in problems such as over-burned or over-bright engravings, as well as a limited dynamic range of engravings. The traditional manual process to solve this problem involves testing settings both in photo editing software and then on the laser cutter, which is tedious and material consuming.
+Upgraded [LaserEngravingOptimizer](https://github.com/laurenzse/LaserEngravingOptimizer) for **variable-power grayscale engraving on wood**, including Creality Falcon2 Pro S 22W + LightBurn. Old command-line positional arguments still work.
 
-The approach in this repository consists of a single manual step to identify the laser cutter settings that produce the clearest black. Using these settings, you engrave a software-generated calibration gauge on your desired material and scan it using a flatbed scanner. The software compares the values obtained from the scan with the original values processed and learns how the input lightness corresponds to its engraved counterpart. Using this calibration data, you can then optimize any photo for engraving in this constellation.
+## What changed
 
-For more background information, please view this [post](https://laurenzseidel.com/projects/laser-engravings) on my personal web page.
+- Measure **each engraved square against local, unengraved wood margins** rather than one white reference for whole sheet. Reduces camera lighting and wood-grain gradients.
+- Replace brittle point cutoff (`white_difference > 10`), polynomial inverse fitting, and Savitzky–Golay truncation with a **monotone, background-corrected calibration curve** (isotonic regression + interpolated inverse). Flat regions do not create negative or nonsensical power trends.
+- Simulate by applying **exact same forward calibration** used to optimize input. A gray simulation represents estimated *absolute brightness* of photographed wood, not contrast-stretched artistic preview.
+- Default photo preprocessing is deterministic luminance grayscale with optional CLAHE (local contrast); legacy `decolorize` retained as explicit option.
+- Export `calibration_report.csv` (all 35 measured points) and `calibration_curve.png` after each run.
+- Add independent `--curve-exponent` control. Existing 6×6 gauge uses **1.8**; recommended *new* 6×6 gauge uses **1.0** to distribute sample levels more uniformly.
+- Reduce requirements to installed libraries actually used.
 
-## What you need
+## Install
 
-- a laser cutter/engraving
-- engraving material for the initial calibration gauge and your photo
-- for better results: a flatbed scanner
+Use Python 3.11 or newer; on Windows:
 
-## Setup of the software
-
-Install the requirements.
-
-```
-pip3 install -r requirements.txt
-```
-
-
-## Creating a calibration gauge
-
-First, create the calibration gauge. Initially, the parameters used below should work well. As you gain more experience, you may want to try smaller gauges.
-
-```
-python create_calibration_image.py -h
-
->> Create a calibration gauge for engraving.
->> 
->> positional arguments:
->>   block_size  Height and width of one square calibration block.
->>   row_num     Number of rows of calibration blocks.
->>   column_num  Number of columns of calibration blocks.
-
-python create_calibration_image.py 400 6 6
-
->> Output: calibration_gauge.png
+```powershell
+mise use python@3.11
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-![](./sample_images/calibration_image.png?raw=true)
+## Optimize a photo
 
-Before engraving this calibration gauge, find the settings on your laser cutter/engraver that produce the clearest black for a full black PNG. The clearest black should be as dark as possible without producing too many burn marks.
+Use a scanned calibration gauge and an input photo:
 
-Once you've found your settings, proceed with engraving the gauge on the material you'll be using for your photo.
-
-## Optimize your photo for engraving
-
-After engraving the gauge, scan it with a flatbed scanner. If you don't have access to one, a well-lit photo of the gauge from above should work. Crop the scan/photo to show only the gauge. Resize the resulting image to match the pixel dimensions of the original calibration gauge image.
-
-Finally, run the script below.
-
-```
-python optimize_color_photo.py -h
-
->> Optimize a color photo for engraving.
->> 
->> positional arguments:
->>   block_size          Height and width of one square calibration block.
->>   row_num             Number of rows of calibration blocks.
->>   column_num          Number of columns of calibration blocks.
->>   scanned_gauge_path  File path of the scanned calibration gauge, the image
->>                       dimensions need to match the dimension of the generated
->>                       gauge image.
->>   photo_path          File path of the photo to optimize.
-
-python optimize_color_photo.py 400 6 6 'scanned_gauge.png' 'your_photo.png'
-
->> Output: 
->> greyscale.png
->> greyscale_for_engraving.png
->> engraving_simulation_result.png
+```powershell
+.\.venv\Scripts\python.exe optimize_color_photo.py 400 6 6 ".\scanned_gauge.png" ".\input.jpg"
 ```
 
-| original                                    | converted into greyscale                    | optimized for engraving                               | simulation result                           |
-|---------------------------------------------|---------------------------------------------|-------------------------------------------------------|---------------------------------------------|
-| ![](./sample_images/original.jpeg?raw=true) | ![](./sample_images/greyscale.jpg?raw=true) | ![](./sample_images/engraving_optimized.png?raw=true) | ![](./sample_images/simulated.png?raw=true) |
+Outputs: `greyscale.png`, `greyscale_for_engraving.png` **(import this in LightBurn)**, `engraving_simulation_result.png`, `calibration_report.csv`, `calibration_curve.png`.
 
-After engraving your photo, you may see something like this:
+## Create a calibration gauge
 
-![](./sample_images/result.jpg?raw=true)
-
-## Simulate result before engraving
-
-You may want to play around with different photos or edits and test the resulting engraving. The script below produces a simulation of what a given image file would look like engraved, with no further edits.
-
+```powershell
+.\.venv\Scripts\python.exe create_calibration_image.py 400 6 6 --curve-exponent 1.0
 ```
-python simulate_engraving.py -h
 
->> Optimize a color photo for engraving.
->> 
->> positional arguments:
->>   block_size          Height and width of one square calibration block.
->>   row_num             Number of rows of calibration blocks.
->>   column_num          Number of columns of calibration blocks.
->>   scanned_gauge_path  File path of the scanned calibration gauge, the image
->>                       dimensions need to match the dimension of the generated
->>                       gauge image.
->>   photo_path          File path of the photo to simulate engraving for.
+This writes `calibration_gauge.png` to the working directory. No generated root PNG gauges are included in this repository. When scanning a gauge, use the same exponent in all commands:
 
-python simulate_engraving.py 400 6 6 'scanned_gauge.png' 'your_photo.png'
-
->> Output: 
->> simulated.png
+```powershell
+.\.venv\Scripts\python.exe optimize_color_photo.py 400 6 6 ".\scanned_gauge.png" ".\input.jpg" --curve-exponent 1.0
+.\.venv\Scripts\python.exe simulate_engraving.py 400 6 6 ".\scanned_gauge.png" ".\input.jpg" --curve-exponent 1.0
 ```
+
+Grayscale source must remain **6×6 in same orientation**. Square #1 (top left) is **unengraved**. Scan must be square, cropped *exactly* to full 6×6 region and resized to **2400×2400 pixels**. Shoot flat on, in diffuse even light with exposure/white balance fixed; flatbed scanner is preferred. Avoid auto enhancement, HDR, strong reflections, rotated/misaligned crops.
+
+### LightBurn process
+
+1. Import gauge; set to **60×60 mm**, giving 10×10 mm per block. Same physical size and laser focus for subsequent images.
+2. Choose Image Mode **Grayscale** (NOT Jarvis/Stucki). Set engraving speed, min/max power, interval/DPI, overscan and air assist. Keep all settings identical for calibration and final output. Keep one pass.
+3. First find a dark square that is dark, not excessively charred. For 22W diode, too much energy can *decrease* darkness by charring/ablating wood, causing saturation/inverted response.
+4. Existing user baseline: **9800 mm/min, 4% min, 23% max, air assist on low, 5% overscan, 450 DPI (~0.056 mm interval)**. These are observed settings, **not verified optimum**. Try isolated A/B test of line interval **0.08 mm (~318 DPI)** and max power/speed separately. For grayscale ensure white pixels are laser-off; investigate whether min 4% is a usable engraving threshold.
+5. Import `greyscale_for_engraving.png`. Disable further LightBurn image corrections and keep grayscale, same settings and engraving scale assumptions. Preview cannot predict wood chemistry or camera artifacts perfectly.
+
+**No code can create physically distinct tones where laser/material response is flat.** Unmarked first-row squares are expected when near-white source values fall under wood burn threshold. A corrected algorithm avoids incorrectly treating them as bad measurements, but cannot invent actual burn response. If the wood only supports a handful of stable darkness levels, experiment with a *separate* black/white dithering workflow (requires different test/calibration and LightBurn image mode).
+
+## Optional tonal controls
+
+```powershell
+.\.venv\Scripts\python.exe optimize_color_photo.py 400 6 6 ".\scanned_gauge.png" ".\input.jpg" --gamma 1.15 --clahe 1.5
+```
+
+`--gamma > 1`: lighter midtones. `--gamma < 1`: darker midtones. `--clahe 0`: disable local contrast enhancement. `--color-method decolorize`: use original randomized color-sensitive algorithm (may change result each run). Defaults: `--gamma 1.0 --clahe 2.0 --color-method luma`.
+
+`calibration_curve.png`: red dots = observed local darkness; blue line = monotonically fitted response. Dark plateau (line nearly flat at right) = power increase yields little useful extra shade. `calibration_report.csv`: values in approximate grayscale units; camera-dependent, not spectrophotometric.
+
+## Known limitations
+
+- Background subtraction handles gradual illumination gradients, **not** perspective distortion, misregistration, different timber, smoke streaks, changing laser energy, or deep wood grain.
+- Calibration fitted from single gauge, not replicated independent exposures; its prediction is an estimate. Visually confirm with a small portrait crop before engraving large photos.
+- Grayscale PNG must be engraved in LightBurn **Grayscale** with same min/max power as gauge. Algorithm does not generate G-code or directly control laser power.
