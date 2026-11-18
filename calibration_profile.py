@@ -167,7 +167,7 @@ def isotonic_increasing(values: np.ndarray, weights: np.ndarray) -> np.ndarray:
 
 
 class CalibrationData:
-    """Estimate locally-background-corrected burn response from grid.
+    """Estimate locally-background-corrected burn response from calibration patches.
 
     LightBurn grayscale: pixel 255 = no laser, pixel 0 = maximum configured power.
     Scan brightness itself is not comparable across wood patches; subtract each
@@ -202,26 +202,22 @@ class CalibrationData:
         return float(np.median(block))
 
     def _extract_samples(self) -> list[CalibrationSample]:
-        size = self.specification.block_size
         gray = self._gray
         samples = []
-        # Each square's unburned margin serves as LOCAL wood reference.
-        # Vertical burn-safety gaps vary per square; use actual generated geometry.
+        # Sample each patch's surrounding unburned margins, independent of layout.
         for area in self.specification.get_colored_areas():
             x0, y0 = map(int, area.top_left_corner)
             x1, y1 = map(int, area.bottom_right_corner)
-            col, row = x0 // size, y0 // size
-            cell_x = col * size
-            inset = max(1, round(size * 0.015))
-            margin_end = max(inset + 1, round(size * 0.075))
+            width = x1 - x0
+            inset = max(1, round(width * 0.015))
+            margin_end = max(inset + 1, round(width * 0.075))
             py0 = y0 + round((y1 - y0) * 0.20)
             py1 = y1 - round((y1 - y0) * 0.20)
-            px0 = x0 + round((x1 - x0) * 0.15)
-            px1 = x1 - round((x1 - x0) * 0.15)
+            px0 = x0 + round(width * 0.15)
+            px1 = x1 - round(width * 0.15)
             engraved = self._median(gray, px0, py0, px1, py1)
-            left = self._median(gray, cell_x + inset, py0, cell_x + margin_end, py1)
-            right = self._median(gray, cell_x + size - margin_end, py0,
-                                 cell_x + size - inset, py1)
+            left = self._median(gray, x0 - margin_end, py0, x0 - inset, py1)
+            right = self._median(gray, x1 + inset, py0, x1 + margin_end, py1)
             background = (left + right) / 2.0
             level = int(area.svg_hls_color[0, 0, 1])
             samples.append(CalibrationSample(level, background, engraved,
