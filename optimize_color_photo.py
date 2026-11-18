@@ -16,9 +16,9 @@ parser.add_argument('--curve-exponent', type=float, default=1.8,
                     help='Must match calibration gauge. Original: 1.8; new linear: 1.0.')
 parser.add_argument('--gamma', type=float, default=1.0,
                     help='Photo contrast tone: >1 lighter midtones, <1 darker midtones.')
-parser.add_argument('--clahe', type=float, default=2.0,
-                    help='Local contrast, default 2.0; 0 disables CLAHE.')
-parser.add_argument('--color-method', choices=['luma', 'decolorize'], default='luma')
+parser.add_argument('--clahe', type=float, default=4.0,
+                    help='Local contrast, default 4.0; 0 disables CLAHE.')
+parser.add_argument('--color-method', choices=['luma', 'decolorize'], default='decolorize')
 args = parser.parse_args()
 
 scan = cv.imread(args.scanned_gauge_path)
