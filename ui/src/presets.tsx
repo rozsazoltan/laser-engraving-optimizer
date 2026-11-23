@@ -1,5 +1,5 @@
-import { For, Show } from "solid-js";
-import { COLOR_METHODS, type CalibrationSpec, type ColorMethod, type Draft, type Laser, type Preset, type ProcessingSettings } from "./types";
+import { For, Show, createSignal } from "solid-js";
+import { COLOR_METHODS, formatPower, laserLabel, powerWatts, type CalibrationSpec, type ColorMethod, type Draft, type Laser, type Preset, type PresetPreview, type ProcessingSettings } from "./types";
 import { Field, NumberField } from "./fields";
 
 type Props = {
@@ -11,6 +11,8 @@ type Props = {
   dirty: boolean;
   busy: boolean;
   working: string | null;
+  preview: PresetPreview | null;
+  previewLoading: boolean;
   onScope: (laserId: string) => void;
   onSelect: (id: string) => void;
   onAdd: () => void;
@@ -22,10 +24,13 @@ type Props = {
   onRemove: () => void;
   onImportScan: () => void;
   onExportGauge: () => void;
+  onOpenArchive: () => void;
+  onClearArchive: () => void;
   onOpenLasers: () => void;
 };
 
 export function PresetsArea(props: Props) {
+  const [confirmClear, setConfirmClear] = createSignal(false);
   const laser = () => props.lasers.find((item) => item.id === props.selectedLaser) ?? null;
   const gaugeWidth = () => (props.draft ? props.draft.calibration.block_size * props.draft.calibration.columns : 0);
   const gaugeHeight = () => (props.draft ? props.draft.calibration.block_size * props.draft.calibration.rows : 0);
@@ -50,7 +55,7 @@ export function PresetsArea(props: Props) {
           <h1>Presets</h1>
           <p class="area-note">
             Calibration and processing for one material on{" "}
-            <strong>{laser()?.name ?? "the selected laser"}</strong>.
+            <strong>{laser() ? laserLabel(laser()!) : "the selected laser"}</strong>.
           </p>
         </div>
         <div class="area-controls">
@@ -69,7 +74,7 @@ export function PresetsArea(props: Props) {
               <For each={props.lasers}>
                 {(item) => (
                   <option value={item.id} selected={item.id === props.selectedLaser}>
-                    {item.name}
+                    {laserLabel(item)}
                   </option>
                 )}
               </For>
@@ -140,6 +145,16 @@ export function PresetsArea(props: Props) {
                     <button type="button" class="btn danger" disabled={props.busy} onClick={props.onRemove}>
                       {props.working === "preset-remove" ? "Removing…" : "Remove"}
                     </button>
+                  </div>
+                </div>
+
+                <div class="editor-section">
+                  <div class="section-head"><span class="section-label">Recording settings</span></div>
+                  <div class="grid-2">
+                    <NumberField label="Speed (mm/s)" value={edited().speed} min={0} max={10000} step={1} disabled={props.busy} onValue={(speed) => props.onEdit({ speed })} />
+                    <NumberField label="Power (%)" value={edited().power_percent} min={0} max={100} step={1} disabled={props.busy} onValue={(power_percent) => props.onEdit({ power_percent })} />
+                    <NumberField label="DPI" value={edited().dpi} min={0} max={10000} step={1} disabled={props.busy} onValue={(dpi) => props.onEdit({ dpi })} />
+                    <p class="hint power-hint">{formatPower(edited().power_percent, powerWatts(edited(), laser()))}</p>
                   </div>
                 </div>
 
@@ -286,6 +301,32 @@ export function PresetsArea(props: Props) {
                   </p>
                   <Show when={props.dirty}>
                     <p class="hint warn">Scans and gauges use the saved calibration. Save to apply unsaved values.</p>
+                  </Show>
+                  <div class="scan-previews" aria-live="polite">
+                    <div class="scan-preview-slot">
+                      <span class="field-label">Calibration scan</span>
+                      <Show when={props.preview?.scan_data_url} fallback={<div class="scan-placeholder" style={{ "aspect-ratio": `${gaugeWidth()} / ${gaugeHeight()}` }}>No calibration scan yet</div>}>
+                        {(src) => <img style={{ "aspect-ratio": `${gaugeWidth()} / ${gaugeHeight()}` }} src={src()} alt="Calibration scan preview" />}
+                      </Show>
+                    </div>
+                    <div class="scan-preview-slot">
+                      <span class="field-label">Sample gauge</span>
+                      <Show when={props.preview} fallback={<div class="scan-placeholder" style={{ "aspect-ratio": `${gaugeWidth()} / ${gaugeHeight()}` }}>{props.previewLoading ? "Loading preview…" : "Preview unavailable"}</div>}>
+                        {(preview) => <img style={{ "aspect-ratio": `${preview().width} / ${preview().height}` }} src={preview().gauge_data_url} alt="Sample gauge preview" />}
+                      </Show>
+                    </div>
+                  </div>
+                  <p class="hint mono preview-size">{props.preview ? `${props.preview.width} × ${props.preview.height} px` : `${gaugeWidth()} × ${gaugeHeight()} px`}{props.previewLoading ? " · Updating preview…" : ""}</p>
+                  <div class="row-actions">
+                    <button type="button" class="btn" disabled={props.busy} onClick={props.onOpenArchive}>Open archive</button>
+                    <button type="button" class="btn" disabled={props.busy} onClick={() => setConfirmClear(true)}>Empty archive</button>
+                  </div>
+                  <Show when={confirmClear()}>
+                    <div class="archive-confirm" role="alert">
+                      <span>Empty archived scans?</span>
+                      <button type="button" class="btn small" onClick={() => setConfirmClear(false)}>Keep</button>
+                      <button type="button" class="btn small danger" disabled={props.busy} onClick={() => { setConfirmClear(false); props.onClearArchive(); }}>Empty archive</button>
+                    </div>
                   </Show>
                 </div>
               </div>

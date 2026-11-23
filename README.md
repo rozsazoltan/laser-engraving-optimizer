@@ -73,21 +73,31 @@ fitted sample table.
 Changing the preset, its settings, or the laser makes the previewed result stale:
 save nothing from it and process the photo again.
 
-Use a separate preset for each material and laser-setting combination. Keep
-the geometry and exponent consistent with the engraved gauge. The
-application rejects a scan with different dimensions; it does not correct
-perspective or align a photograph automatically.
+Input photos may be PNG, JPG/JPEG, WebP, BMP, or TIFF. HEIC and HEIF are not
+supported; convert those to one of the supported formats first.
 
-Use a separate preset for each material and laser-setting combination.
-Keep the geometry and exponent consistent with the engraved gauge. The
-application rejects a scan with different dimensions; it does not correct
-perspective or align a photograph automatically.
+Use a separate preset for each material and laser-setting combination. Keep the
+geometry and exponent consistent with the engraved gauge. The application rejects
+a scan with different dimensions; it does not correct perspective or align a
+photograph automatically.
+
+Give each laser its wattage. The laser is listed as `name 40W`, and a preset's
+power percentage shows the resulting wattage in brackets, for example
+`35% (14 W)`. Presets also record the speed (mm/s) and the DPI they were
+calibrated with; leave those at `0` when you do not know them.
+
+The Presets area shows the imported calibration scan next to the generated
+sample gauge at the same scale, so a wrong-size or badly cropped scan is visible
+before an image is processed. Replacing a scan moves the previous managed copy
+into `archived-scans` in the application data directory, named after the preset
+and the replacement time. **Open archive** reveals those files and **Empty
+archive** clears them.
 
 Presets and managed scans are stored in
 `%LOCALAPPDATA%\LaserEngravingOptimizer`. Back up that entire directory to retain
-both the settings and their scans. Use one application instance at a time;
-concurrent preset editing is not supported. An invalid preset file is reported
-rather than silently replaced.
+the settings, their scans and the archived scans. Use one application instance
+at a time; concurrent preset editing is not supported. An invalid preset file is
+reported rather than silently replaced.
 
 ### Check the implementation
 

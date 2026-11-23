@@ -94,6 +94,7 @@ impl UiProcessingSettings {
 pub struct UiLaser {
     pub id: String,
     pub name: String,
+    pub watts: f64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -105,7 +106,21 @@ pub struct UiPreset {
     pub calibration: UiCalibrationSpec,
     pub processing: UiProcessingSettings,
     #[serde(default)]
+    pub speed: f64,
+    #[serde(default)]
+    pub power_percent: f64,
+    #[serde(default)]
+    pub dpi: f64,
+    #[serde(default)]
     pub has_scan: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PresetPreview {
+    pub scan_data_url: Option<String>,
+    pub gauge_data_url: String,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -157,6 +172,7 @@ fn build_state(inner: &Inner) -> UiState {
         .map(|laser| UiLaser {
             id: laser.id.clone(),
             name: laser.name.clone(),
+            watts: laser.watts,
         })
         .collect();
     let presets = inner
@@ -170,6 +186,9 @@ fn build_state(inner: &Inner) -> UiState {
             note: preset.note.clone(),
             calibration: UiCalibrationSpec::from(&preset.calibration),
             processing: UiProcessingSettings::from(&preset.processing),
+            speed: preset.speed,
+            power_percent: preset.power_percent,
+            dpi: preset.dpi,
             has_scan: inner.store.calibration_photo_path(preset).is_some(),
         })
         .collect();
@@ -258,6 +277,25 @@ fn data_url(image: &GrayImage) -> Result<String, String> {
     Ok(format!("data:image/png;base64,{}", BASE64.encode(&buffer)))
 }
 
+fn build_preset_preview(store: &PresetStore, preset: &Preset) -> Result<PresetPreview, String> {
+    let gauge = preset.calibration.generate()?;
+    let (width, height) = (gauge.width(), gauge.height());
+    // A missing or corrupt scan only hides the scan; the gauge still serves.
+    let scan_data_url = store
+        .scan_path(preset)
+        .and_then(|path| processing::load_rgb(&path).ok())
+        .and_then(|scan| {
+            let gray = image::DynamicImage::ImageRgb8(scan).to_luma8();
+            data_url(&preview_image(&gray)).ok()
+        });
+    Ok(PresetPreview {
+        scan_data_url,
+        gauge_data_url: data_url(&preview_image(&gauge))?,
+        width,
+        height,
+    })
+}
+
 fn selected_scan(
     inner: &Inner,
 ) -> Result<
@@ -307,11 +345,11 @@ pub fn get_state(host: State<'_, Host>) -> UiState {
 }
 
 #[tauri::command]
-pub fn add_laser(host: State<'_, Host>, name: String) -> Result<UiState, String> {
+pub fn add_laser(host: State<'_, Host>, name: String, watts: f64) -> Result<UiState, String> {
     let mut inner = host.lock();
     guard_busy(&inner)?;
     inner.error = None;
-    if let Err(error) = inner.store.add_laser(&name) {
+    if let Err(error) = inner.store.add_laser(&name, watts) {
         return Err(host.fail(&mut inner, error.to_string()));
     }
     inner.cache.clear();
@@ -320,11 +358,16 @@ pub fn add_laser(host: State<'_, Host>, name: String) -> Result<UiState, String>
 }
 
 #[tauri::command]
-pub fn rename_laser(host: State<'_, Host>, id: String, name: String) -> Result<UiState, String> {
+pub fn rename_laser(
+    host: State<'_, Host>,
+    id: String,
+    name: String,
+    watts: f64,
+) -> Result<UiState, String> {
     let mut inner = host.lock();
     guard_busy(&inner)?;
     inner.error = None;
-    if let Err(error) = inner.store.rename_laser(&id, &name) {
+    if let Err(error) = inner.store.rename_laser(&id, &name, watts) {
         return Err(host.fail(&mut inner, error.to_string()));
     }
     inner.status = "Laser renamed".to_string();
@@ -423,6 +466,9 @@ pub fn save_preset(host: State<'_, Host>, preset: UiPreset) -> Result<UiState, S
         note: preset.note,
         calibration,
         processing: settings,
+        speed: preset.speed,
+        power_percent: preset.power_percent,
+        dpi: preset.dpi,
         calibration_photo: existing.calibration_photo.clone(),
     };
     if let Err(error) = inner.store.update(updated) {
@@ -477,6 +523,55 @@ pub fn export_gauge(host: State<'_, Host>, id: String, path: String) -> Result<U
     }
     inner.status = "Calibration image exported".to_string();
     Ok(host.publish(&mut inner))
+}
+
+#[tauri::command]
+pub fn preset_preview(host: State<'_, Host>, id: String) -> Result<PresetPreview, String> {
+    let inner = host.lock();
+    let preset = inner
+        .store
+        .presets()
+        .iter()
+        .find(|preset| preset.id == id)
+        .ok_or_else(|| "Preset not found.".to_string())?;
+    build_preset_preview(&inner.store, preset)
+}
+
+#[tauri::command]
+pub fn open_scan_archive(host: State<'_, Host>) -> Result<UiState, String> {
+    let mut inner = host.lock();
+    guard_busy(&inner)?;
+    inner.error = None;
+    let dir = inner.store.archive_dir();
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        return Err(host.fail(
+            &mut inner,
+            format!("Could not create scan archive: {error}"),
+        ));
+    }
+    #[cfg(windows)]
+    let opened = std::process::Command::new("explorer").arg(&dir).spawn();
+    #[cfg(not(windows))]
+    let opened = std::process::Command::new("xdg-open").arg(&dir).spawn();
+    if let Err(error) = opened {
+        return Err(host.fail(&mut inner, format!("Could not open scan archive: {error}")));
+    }
+    inner.status = "Scan archive opened".to_string();
+    Ok(host.publish(&mut inner))
+}
+
+#[tauri::command]
+pub fn clear_scan_archive(host: State<'_, Host>) -> Result<UiState, String> {
+    let mut inner = host.lock();
+    guard_busy(&inner)?;
+    inner.error = None;
+    match inner.store.clear_archive() {
+        Ok(count) => {
+            inner.status = format!("Cleared {count} archived scan(s)");
+            Ok(host.publish(&mut inner))
+        }
+        Err(error) => Err(host.fail(&mut inner, error.to_string())),
+    }
 }
 
 #[tauri::command]
@@ -701,4 +796,43 @@ pub fn init(app: &tauri::App) -> Result<(), String> {
     let host = Host::new(app.handle().clone())?;
     app.manage(host);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_root() -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("host-preview-{nanos}"));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn missing_scan_preview_serves_only_gauge() {
+        let root = temp_root();
+        let mut store = PresetStore::open(&root).unwrap();
+        let laser_id = store.add_laser("Laser", 40.0).unwrap().id.clone();
+        let mut preset = Preset::new("Scanless", &laser_id);
+        preset.calibration.block_size = 32;
+        preset.calibration.rows = 2;
+        preset.calibration.columns = 2;
+        let expected = preset.calibration.dimensions().unwrap();
+        let id = preset.id.clone();
+        store.add(preset).unwrap();
+        let preset = store
+            .presets()
+            .iter()
+            .find(|preset| preset.id == id)
+            .unwrap();
+        let preview = build_preset_preview(&store, preset).unwrap();
+        assert!(preview.scan_data_url.is_none());
+        assert!(preview.gauge_data_url.starts_with("data:image/png;base64,"));
+        assert_eq!((preview.width, preview.height), expected);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -21,7 +21,11 @@ A calibration is valid only for the laser it was measured on, therefore:
 ## Shared types
 
 ```ts
-type Laser = { id: string; name: string };
+type Laser = {
+  id: string;
+  name: string; // 1..64 chars, unique (case-insensitive)
+  watts: number; // 0..1000; 0 means not recorded yet
+};
 
 type CalibrationSpec = {
   block_size: number; // 32..4096
@@ -45,6 +49,9 @@ type Preset = {
   note: string;
   calibration: CalibrationSpec;
   processing: ProcessingSettings;
+  speed: number; // mm/s, 0..10000; 0 means not recorded yet
+  power_percent: number; // 0..100, 0 means not recorded yet
+  dpi: number; // 0..10000; 0 means not recorded yet
   has_scan: boolean;
 };
 
@@ -66,11 +73,23 @@ type ProcessResult = {
   height: number;
   report_csv: string;
 };
+
+type PresetPreview = {
+  scan_data_url: string | null; // PNG data URL, long edge <= 640 px
+  gauge_data_url: string; // PNG data URL, long edge <= 640 px
+  width: number; // gauge pixel width
+  height: number; // gauge pixel height
+};
 ```
 
-Defaults for a new laser: only a name is required.
-Defaults for a new preset: `calibration = { block_size: 400, rows: 6, columns: 6, exponent: 1.8 }`
-and `processing = { gamma: 1.0, clahe_clip: 4.0, color_method: "Decolorize" }`.
+Defaults for a new laser: a name; `watts = 0` (unrecorded).
+Laser display label: `` `${name} ${watts}W` `` — a space between the name and the
+number (`K40 40W`). When `watts` is 0 the label is just the name.
+Defaults for a new preset: `calibration = { block_size: 400, rows: 6, columns: 6, exponent: 1.8 }`,
+`processing = { gamma: 1.0, clahe_clip: 4.0, color_method: "Decolorize" }`, and
+`speed`, `power_percent`, `dpi` all 0 (unrecorded).
+Power display: `watts × power_percent / 100`, rendered as `(12.5 W)` right after the
+percentage. Omit the parenthetical when `watts` or `power_percent` is 0.
 
 ## Commands
 
@@ -81,8 +100,8 @@ event with the same payload. Rejections are plain strings.
 
 | Command | Args | Notes |
 | --- | --- | --- |
-| `add_laser` | `name` | Trimmed, 1..64 chars, unique (case-insensitive). Becomes selected. |
-| `rename_laser` | `id`, `name` | Same validation; keeps the selection. |
+| `add_laser` | `name`, `watts` | Trimmed name 1..64 chars, unique (case-insensitive); `watts` 0..1000. Becomes selected. |
+| `rename_laser` | `id`, `name`, `watts` | Same validation; keeps the selection. |
 | `remove_laser` | `id` | Rejected while the laser still owns presets. |
 
 ### Presets
@@ -96,6 +115,13 @@ event with the same payload. Rejections are plain strings.
 | `remove_preset` | `id` | Removes its managed scan copy. |
 | `import_scan` | `id`, `path` | Validates the decoded image against the preset's exact gauge size; stores a managed copy. |
 | `export_gauge` | `id`, `path` | Writes the preset's calibration gauge PNG. |
+| `preset_preview` | `id` | Returns `PresetPreview`: the stored scan and the generated gauge, both scaled to the same long edge, plus the gauge pixel size. Fetched when a preset is selected or its scan changes; never part of `State`. |
+| `open_scan_archive` | — | Opens the archived-scan folder in the OS file manager. |
+| `clear_scan_archive` | — | Empties the archived-scan folder. |
+
+Replacing a preset's scan archives the previous managed copy instead of deleting it:
+`<preset name> - <timestamp>.png` in `archived-scans/` under the app data dir. The
+archive is shared by all presets and survives preset removal.
 
 ### Engraving
 

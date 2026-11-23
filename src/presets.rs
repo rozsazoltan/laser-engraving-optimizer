@@ -10,11 +10,16 @@ use std::{
 const SCHEMA_VERSION: u32 = 2;
 const MIGRATED_LASER_NAME: &str = "Migrated laser";
 const MAX_LASER_NAME_CHARS: usize = 64;
+// Schema stays at 2: the metadata fields below are `serde(default)`, so old
+// schema-2 files load with zeros and no migration or version bump is needed.
+const MAX_ARCHIVE_STEM_CHARS: usize = 80;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Laser {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub watts: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -29,6 +34,12 @@ pub struct Preset {
     #[serde(default)]
     pub processing: ProcessingSettings,
     #[serde(default)]
+    pub speed: f64,
+    #[serde(default)]
+    pub power_percent: f64,
+    #[serde(default)]
+    pub dpi: f64,
+    #[serde(default)]
     pub calibration_photo: Option<String>,
 }
 
@@ -41,6 +52,9 @@ impl Preset {
             note: String::new(),
             calibration: GridCalibrationSpecification::default(),
             processing: ProcessingSettings::default(),
+            speed: 0.0,
+            power_percent: 0.0,
+            dpi: 0.0,
             calibration_photo: None,
         }
     }
@@ -94,6 +108,9 @@ impl LegacyPreset {
             note: self.note,
             calibration: self.calibration,
             processing: self.processing,
+            speed: 0.0,
+            power_percent: 0.0,
+            dpi: 0.0,
             calibration_photo: self.calibration_photo,
         }
     }
@@ -226,10 +243,15 @@ impl PresetStore {
         Ok(())
     }
 
-    pub fn add_laser(&mut self, name: &str) -> Result<&Laser> {
+    pub fn add_laser(&mut self, name: &str, watts: f64) -> Result<&Laser> {
+        validate_watts(watts)?;
         let name = self.checked_laser_name(name, None)?;
         let old = self.store.clone();
-        let laser = Laser { id: new_id(), name };
+        let laser = Laser {
+            id: new_id(),
+            name,
+            watts,
+        };
         self.store.lasers.push(laser);
         self.store.selected_laser = Some(self.store.lasers.last().unwrap().id.clone());
         self.store.selected_preset = None;
@@ -240,18 +262,21 @@ impl PresetStore {
         Ok(self.store.lasers.last().unwrap())
     }
 
-    pub fn rename_laser(&mut self, id: &str, name: &str) -> Result<()> {
+    pub fn rename_laser(&mut self, id: &str, name: &str, watts: f64) -> Result<()> {
         if !self.store.lasers.iter().any(|laser| laser.id == id) {
             return Err(PresetError::Invalid("laser does not exist".into()));
         }
+        validate_watts(watts)?;
         let name = self.checked_laser_name(name, Some(id))?;
         let old = self.store.clone();
-        self.store
+        let laser = self
+            .store
             .lasers
             .iter_mut()
             .find(|laser| laser.id == id)
-            .unwrap()
-            .name = name;
+            .unwrap();
+        laser.name = name;
+        laser.watts = watts;
         if let Err(error) = self.save() {
             self.store = old;
             return Err(error);
@@ -412,6 +437,7 @@ impl PresetStore {
             )));
         }
         let old_photo = preset.calibration_photo.clone();
+        let preset_name = preset.name.clone();
         let photos = self.root.join("photos");
         fs::create_dir_all(&photos)?;
         let photo_name = format!("{}.png", new_id());
@@ -439,13 +465,64 @@ impl PresetStore {
             let _ = fs::remove_file(target);
             return Err(e);
         }
-        self.remove_unreferenced(old_photo);
+        if let Some(old_photo) = old_photo {
+            self.archive_managed_scan(&preset_name, &old_photo);
+        }
         Ok(())
     }
 
     pub fn calibration_photo_path(&self, preset: &Preset) -> Option<PathBuf> {
         let name = preset.calibration_photo.as_deref()?;
         safe_photo_name(name).then(|| self.root.join("photos").join(name))
+    }
+
+    pub fn scan_path(&self, preset: &Preset) -> Option<PathBuf> {
+        self.calibration_photo_path(preset)
+    }
+
+    pub fn archive_dir(&self) -> PathBuf {
+        self.root.join("archived-scans")
+    }
+
+    /// Removes every file in the archive but keeps the directory. Missing
+    /// directories are created, so the caller always ends with an empty folder.
+    pub fn clear_archive(&self) -> Result<usize> {
+        let dir = self.archive_dir();
+        fs::create_dir_all(&dir)?;
+        let mut removed = 0;
+        for entry in fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.is_file() {
+                fs::remove_file(&path)?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Moves an unreferenced managed scan into the archive. The name is built
+    /// from a sanitized preset name and a timestamp, never from a stored path.
+    fn archive_managed_scan(&self, preset_name: &str, photo_name: &str) {
+        if !safe_photo_name(photo_name) {
+            return;
+        }
+        let source = self.root.join("photos").join(photo_name);
+        if !source.is_file() {
+            return;
+        }
+        let archived = self.archive_dir();
+        if fs::create_dir_all(&archived).is_err() {
+            return;
+        }
+        let stem = sanitize_archive_stem(preset_name);
+        let stamp = archive_timestamp();
+        let mut target = archived.join(format!("{stem} - {stamp}.png"));
+        let mut suffix = 2;
+        while target.exists() {
+            target = archived.join(format!("{stem} - {stamp} ({suffix}).png"));
+            suffix += 1;
+        }
+        let _ = fs::rename(&source, &target);
     }
 
     fn checked_laser_name(&self, name: &str, skip: Option<&str>) -> Result<String> {
@@ -516,6 +593,7 @@ fn migrate_legacy(legacy: LegacyStore) -> Store {
     let laser = Laser {
         id: new_id(),
         name: MIGRATED_LASER_NAME.to_string(),
+        watts: 0.0,
     };
     let laser_id = laser.id.clone();
     store.lasers.push(laser);
@@ -581,6 +659,9 @@ fn validate_preset(p: &Preset) -> Result<()> {
     }
     p.calibration.validate().map_err(PresetError::Invalid)?;
     p.processing.validate().map_err(PresetError::Invalid)?;
+    validate_metric("speed", p.speed, 10_000.0)?;
+    validate_metric("power_percent", p.power_percent, 100.0)?;
+    validate_metric("dpi", p.dpi, 10_000.0)?;
     if p.calibration_photo
         .as_deref()
         .is_some_and(|n| !safe_photo_name(n))
@@ -594,6 +675,7 @@ fn validate_preset(p: &Preset) -> Result<()> {
 
 fn validate_laser(laser: &Laser) -> Result<()> {
     validate_id(&laser.id, "laser")?;
+    validate_watts(laser.watts)?;
     let name = laser.name.trim();
     if name.is_empty() || name.chars().count() > MAX_LASER_NAME_CHARS {
         return Err(PresetError::Invalid(format!(
@@ -609,6 +691,24 @@ fn validate_laser(laser: &Laser) -> Result<()> {
         return Err(PresetError::Invalid(
             "laser name must not have surrounding whitespace".into(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_watts(watts: f64) -> Result<()> {
+    if !watts.is_finite() || !(0.0..=1000.0).contains(&watts) {
+        return Err(PresetError::Invalid(
+            "laser watts must be a number between 0 and 1000".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_metric(what: &str, value: f64, max: f64) -> Result<()> {
+    if !value.is_finite() || !(0.0..=max).contains(&value) {
+        return Err(PresetError::Invalid(format!(
+            "{what} must be a number between 0 and {max}"
+        )));
     }
     Ok(())
 }
@@ -660,6 +760,59 @@ fn validate_store(store: &Store) -> Result<()> {
     Ok(())
 }
 
+fn sanitize_archive_stem(name: &str) -> String {
+    let replaced: String = name
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    let collapsed = replaced.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = collapsed.trim_matches(|c| c == '.' || c == ' ');
+    let capped: String = trimmed.chars().take(MAX_ARCHIVE_STEM_CHARS).collect();
+    let capped = capped.trim();
+    if capped.is_empty() {
+        "preset".to_string()
+    } else {
+        capped.to_string()
+    }
+}
+
+fn archive_timestamp() -> String {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let days = seconds.div_euclid(86_400);
+    let rest = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}-{:02}-{:02}",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
+}
+
+// Howard Hinnant's days-to-civil-date conversion, UTC and dependency-free.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+    (year, month as u32, day as u32)
+}
+
 fn new_id() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -707,7 +860,7 @@ mod tests {
             .save(&source)
             .unwrap();
         let mut db = PresetStore::open(&root).unwrap();
-        let laser_id = db.add_laser("Engraver A").unwrap().id.clone();
+        let laser_id = db.add_laser("Engraver A", 0.0).unwrap().id.clone();
         let mut first = valid_preset("Default", &laser_id);
         first.note = "engraver A".into();
         let id = first.id.clone();
@@ -829,20 +982,22 @@ mod tests {
     fn laser_validation_and_ownership_rules() {
         let root = temp();
         let mut db = PresetStore::open(&root).unwrap();
-        assert!(db.add_laser("   ").is_err());
-        assert!(db.add_laser("bad\nname").is_err());
-        assert!(db.add_laser(&"x".repeat(MAX_LASER_NAME_CHARS + 1)).is_err());
-        let id = db.add_laser("  Diode  ").unwrap().id.clone();
+        assert!(db.add_laser("   ", 0.0).is_err());
+        assert!(db.add_laser("bad\nname", 0.0).is_err());
+        assert!(db
+            .add_laser(&"x".repeat(MAX_LASER_NAME_CHARS + 1), 0.0)
+            .is_err());
+        let id = db.add_laser("  Diode  ", 0.0).unwrap().id.clone();
         assert_eq!(db.lasers()[0].name, "Diode");
         assert_eq!(db.selected_laser().unwrap().id, id);
-        assert!(db.add_laser("diode").is_err());
+        assert!(db.add_laser("diode", 0.0).is_err());
 
-        db.rename_laser(&id, "Fiber").unwrap();
+        db.rename_laser(&id, "Fiber", 0.0).unwrap();
         assert_eq!(db.lasers()[0].name, "Fiber");
         assert_eq!(db.selected_laser().unwrap().id, id);
 
-        let other = db.add_laser("Co2").unwrap().id.clone();
-        assert!(db.rename_laser(&id, "co2").is_err());
+        let other = db.add_laser("Co2", 0.0).unwrap().id.clone();
+        assert!(db.rename_laser(&id, "co2", 0.0).is_err());
         assert_eq!(db.lasers()[0].name, "Fiber");
         assert_eq!(db.selected_laser().unwrap().id, other);
 
@@ -854,7 +1009,7 @@ mod tests {
         db.add(preset).unwrap();
         assert!(db.remove_laser(&id).is_err());
 
-        db.rename_laser(&id, "Fiber one").unwrap();
+        db.rename_laser(&id, "Fiber one", 0.0).unwrap();
         db.remove(&preset_id).unwrap();
         db.remove_laser(&id).unwrap();
         assert_eq!(db.lasers().len(), 1);
@@ -866,7 +1021,7 @@ mod tests {
     fn validation_rejects_unsafe_photo_and_duplicate_ids() {
         let root = temp();
         let mut db = PresetStore::open(&root).unwrap();
-        let laser_id = db.add_laser("Laser").unwrap().id.clone();
+        let laser_id = db.add_laser("Laser", 0.0).unwrap().id.clone();
         let mut p = valid_preset("x", &laser_id);
         p.calibration_photo = Some("../outside.png".into());
         assert!(db.add(p).is_err());
@@ -882,7 +1037,7 @@ mod tests {
         let source = root.join("source.png");
         image::RgbImage::new(64, 64).save(&source).unwrap();
         let mut db = PresetStore::open(&root).unwrap();
-        let laser_id = db.add_laser("Laser").unwrap().id.clone();
+        let laser_id = db.add_laser("Laser", 0.0).unwrap().id.clone();
         let p = valid_preset("x", &laser_id);
         let id = p.id.clone();
         db.add(p).unwrap();
@@ -897,7 +1052,7 @@ mod tests {
     fn failed_mutations_restore_memory_and_keep_json() {
         let root = temp();
         let mut db = PresetStore::open(&root).unwrap();
-        let laser_id = db.add_laser("Laser").unwrap().id.clone();
+        let laser_id = db.add_laser("Laser", 0.0).unwrap().id.clone();
         let original = valid_preset("original", &laser_id);
         let id = original.id.clone();
         db.add(original).unwrap();
@@ -966,17 +1121,168 @@ mod tests {
     fn failed_laser_mutations_roll_back() {
         let root = temp();
         let mut db = PresetStore::open(&root).unwrap();
-        db.add_laser("First").unwrap();
+        db.add_laser("First", 0.0).unwrap();
         let before = db.store.clone();
         let (store, backup) = force_save_failure(&root);
-        assert!(db.add_laser("Second").is_err());
+        assert!(db.add_laser("Second", 0.0).is_err());
         assert_eq!(db.store, before);
         restore_save(&root, store, backup);
         let id = db.lasers()[0].id.clone();
         let (store, backup) = force_save_failure(&root);
-        assert!(db.rename_laser(&id, "Renamed").is_err());
+        assert!(db.rename_laser(&id, "Renamed", 0.0).is_err());
         assert_eq!(db.store, before);
         restore_save(&root, store, backup);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn laser_watts_round_trip_and_validation() {
+        let root = temp();
+        let mut db = PresetStore::open(&root).unwrap();
+        assert!(db.add_laser("K40", -1.0).is_err());
+        assert!(db.add_laser("K40", 1000.5).is_err());
+        assert!(db.add_laser("K40", f64::NAN).is_err());
+        let id = db.add_laser("K40", 40.0).unwrap().id.clone();
+        assert_eq!(db.lasers()[0].watts, 40.0);
+        db.rename_laser(&id, "K40", 60.0).unwrap();
+        assert_eq!(db.selected_laser().unwrap().watts, 60.0);
+        let mut reopened = PresetStore::open(&root).unwrap();
+        assert_eq!(reopened.lasers()[0].watts, 60.0);
+        assert!(reopened.rename_laser(&id, "K40", 2000.0).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preset_metrics_round_trip_and_validation() {
+        let root = temp();
+        let mut db = PresetStore::open(&root).unwrap();
+        let laser_id = db.add_laser("Laser", 0.0).unwrap().id.clone();
+        let mut preset = valid_preset("metrics", &laser_id);
+        preset.speed = 300.0;
+        preset.power_percent = 80.0;
+        preset.dpi = 600.0;
+        let id = preset.id.clone();
+        db.add(preset).unwrap();
+        let reopened = PresetStore::open(&root).unwrap();
+        let loaded = reopened
+            .presets()
+            .iter()
+            .find(|preset| preset.id == id)
+            .unwrap();
+        assert_eq!(
+            (loaded.speed, loaded.power_percent, loaded.dpi),
+            (300.0, 80.0, 600.0)
+        );
+        let mut bad = valid_preset("bad speed", &laser_id);
+        bad.speed = 10_000.5;
+        assert!(db.add(bad).is_err());
+        let mut bad = valid_preset("bad power", &laser_id);
+        bad.power_percent = 100.5;
+        assert!(db.add(bad).is_err());
+        let mut bad = valid_preset("bad dpi", &laser_id);
+        bad.dpi = -1.0;
+        assert!(db.add(bad).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replacing_scan_archives_previous_copy() {
+        let root = temp();
+        let mut db = PresetStore::open(&root).unwrap();
+        let laser_id = db.add_laser("Laser", 0.0).unwrap().id.clone();
+        let preset = valid_preset("K40 board", &laser_id);
+        let id = preset.id.clone();
+        db.add(preset).unwrap();
+        let first = root.join("first.png");
+        image::RgbImage::from_pixel(64, 64, image::Rgb([1, 2, 3]))
+            .save(&first)
+            .unwrap();
+        db.import_calibration_photo(&id, &first).unwrap();
+        let first_managed = db.calibration_photo_path(&db.presets()[0]).unwrap();
+        let first_bytes = fs::read(&first_managed).unwrap();
+
+        let second = root.join("second.png");
+        image::RgbImage::from_pixel(64, 64, image::Rgb([9, 8, 7]))
+            .save(&second)
+            .unwrap();
+        db.import_calibration_photo(&id, &second).unwrap();
+
+        assert_eq!(fs::read_dir(root.join("photos")).unwrap().count(), 1);
+        assert!(!first_managed.exists());
+        assert_eq!(db.calibration_photo_path(&db.presets()[0]), {
+            let current = db.presets()[0].calibration_photo.clone().unwrap();
+            Some(root.join("photos").join(current))
+        });
+        let archived: Vec<PathBuf> = fs::read_dir(db.archive_dir())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(archived.len(), 1);
+        let name = archived[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(name.starts_with("K40 board - "), "{name}");
+        assert!(name.ends_with(".png"), "{name}");
+        assert_eq!(fs::read(&archived[0]).unwrap(), first_bytes);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clear_archive_keeps_current_scan_and_store() {
+        let root = temp();
+        let no_dir = PresetStore::open(&root).unwrap();
+        assert_eq!(no_dir.clear_archive().unwrap(), 0);
+
+        let mut db = PresetStore::open(&root).unwrap();
+        let laser_id = db.add_laser("Laser", 0.0).unwrap().id.clone();
+        let preset = valid_preset("Archived", &laser_id);
+        let id = preset.id.clone();
+        db.add(preset).unwrap();
+        for value in [1u8, 2u8] {
+            let source = root.join(format!("scan-{value}.png"));
+            image::RgbImage::from_pixel(64, 64, image::Rgb([value, value, value]))
+                .save(&source)
+                .unwrap();
+            db.import_calibration_photo(&id, &source).unwrap();
+        }
+        assert_eq!(fs::read_dir(db.archive_dir()).unwrap().count(), 1);
+        let managed = db.calibration_photo_path(&db.presets()[0]).unwrap();
+        let managed_bytes = fs::read(&managed).unwrap();
+        let json_bytes = fs::read(root.join("presets.json")).unwrap();
+
+        assert_eq!(db.clear_archive().unwrap(), 1);
+        assert!(db.archive_dir().exists());
+        assert_eq!(fs::read_dir(db.archive_dir()).unwrap().count(), 0);
+        assert!(managed.exists());
+        assert_eq!(fs::read(&managed).unwrap(), managed_bytes);
+        assert_eq!(fs::read(root.join("presets.json")).unwrap(), json_bytes);
+        assert_eq!(db.clear_archive().unwrap(), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn schema_two_without_metadata_loads_zeros() {
+        let root = temp();
+        let path = root.join("presets.json");
+        let json = serde_json::json!({
+            "schema": 2,
+            "lasers": [{ "id": "l-1", "name": "Old laser" }],
+            "presets": [{ "id": "p-1", "laser_id": "l-1", "name": "Old preset" }],
+            "selected_laser": null,
+            "selected_preset": null
+        });
+        let bytes = serde_json::to_vec_pretty(&json).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let db = PresetStore::open(&root).unwrap();
+        assert_eq!(db.lasers()[0].watts, 0.0);
+        let preset = &db.presets()[0];
+        assert_eq!(
+            (preset.speed, preset.power_percent, preset.dpi),
+            (0.0, 0.0, 0.0)
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
         fs::remove_dir_all(root).unwrap();
     }
 }

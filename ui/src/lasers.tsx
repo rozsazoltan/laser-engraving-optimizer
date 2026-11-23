@@ -1,5 +1,5 @@
 import { For, Show, createSignal } from "solid-js";
-import type { Laser } from "./types";
+import { laserLabel, type Laser } from "./types";
 
 type Props = {
   lasers: Laser[];
@@ -7,32 +7,38 @@ type Props = {
   presetCounts: Record<string, number>;
   busy: boolean;
   onSelect: (id: string) => void;
-  onAdd: (name: string) => Promise<boolean>;
-  onRename: (id: string, name: string) => Promise<boolean>;
+  onAdd: (name: string, watts: number) => Promise<boolean>;
+  onRename: (id: string, name: string, watts: number) => Promise<boolean>;
   onRemove: (id: string) => void;
   onOpenPresets: () => void;
 };
 
 export function LasersArea(props: Props) {
   const [name, setName] = createSignal("");
+  const [watts, setWatts] = createSignal(0);
   const [editingId, setEditingId] = createSignal<string | null>(null);
   const [editName, setEditName] = createSignal("");
+  const [editWatts, setEditWatts] = createSignal(0);
 
   const add = async () => {
     const value = name().trim();
     if (!value || props.busy) return;
-    if (await props.onAdd(value)) setName("");
+    if (await props.onAdd(value, watts())) {
+      setName("");
+      setWatts(0);
+    }
   };
 
   const startRename = (laser: Laser) => {
     setEditingId(laser.id);
     setEditName(laser.name);
+    setEditWatts(laser.watts);
   };
 
   const commitRename = async (id: string) => {
     const value = editName().trim();
     if (!value) return;
-    if (await props.onRename(id, value)) setEditingId(null);
+    if (await props.onRename(id, value, editWatts())) setEditingId(null);
   };
 
   return (
@@ -65,6 +71,7 @@ export function LasersArea(props: Props) {
           value={name()}
           onInput={(event) => setName(event.currentTarget.value)}
         />
+        <input class="input watts-input" type="number" aria-label="Laser watts" min="0" max="1000" step="1" disabled={props.busy} value={watts()} onInput={(event) => setWatts(Number(event.currentTarget.value))} />
         <button type="submit" class="btn" disabled={props.busy || !name().trim()}>
           Add laser
         </button>
@@ -95,7 +102,7 @@ export function LasersArea(props: Props) {
                         disabled={props.busy}
                         aria-pressed={laser.id === props.selectedLaser}
                       >
-                        <span class="laser-name">{laser.name}</span>
+                        <span class="laser-name">{laserLabel(laser)}</span>
                         <span class="laser-count">
                           {props.presetCounts[laser.id] ?? 0} preset
                           {(props.presetCounts[laser.id] ?? 0) === 1 ? "" : "s"}
@@ -136,6 +143,7 @@ export function LasersArea(props: Props) {
                       if (event.key === "Escape") setEditingId(null);
                     }}
                   />
+                  <input class="input watts-input" type="number" aria-label={`Rename ${laser.name} watts`} min="0" max="1000" step="1" disabled={props.busy} value={editWatts()} onInput={(event) => setEditWatts(Number(event.currentTarget.value))} />
                   <div class="row-actions">
                     <button
                       type="button"

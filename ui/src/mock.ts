@@ -1,4 +1,4 @@
-import { DEFAULT_CALIBRATION, DEFAULT_PROCESSING, presetKey, type Laser, type Preset, type ProcessResult, type State } from "./types";
+import { DEFAULT_CALIBRATION, DEFAULT_PROCESSING, presetKey, type Laser, type Preset, type PresetPreview, type ProcessResult, type State } from "./types";
 
 /**
  * Browser-only stand-in for the Tauri host, used by `pnpm dev` so the UI can be
@@ -55,13 +55,16 @@ const preset = (id: string, laserId: string, name: string, note: string, hasScan
   note,
   calibration: { ...DEFAULT_CALIBRATION },
   processing: { ...DEFAULT_PROCESSING },
+  speed: 0,
+  power_percent: 0,
+  dpi: 0,
   has_scan: hasScan,
 });
 
 let lasers: Laser[] = [
-  { id: "laser-k40", name: "K40 CO₂ 40 W" },
-  { id: "laser-diode", name: "Diode 10 W (450 nm)" },
-  { id: "laser-fiber", name: "Fiber 20 W" },
+  { id: "laser-k40", name: "K40 CO₂", watts: 40 },
+  { id: "laser-diode", name: "Diode (450 nm)", watts: 10 },
+  { id: "laser-fiber", name: "Fiber", watts: 20 },
 ];
 
 let presets: Preset[] = [
@@ -139,6 +142,14 @@ const validatePreset = (incoming: Preset) => {
   const { gamma, clahe_clip } = incoming.processing;
   if (!(gamma >= 0.1 && gamma <= 4)) throw "Gamma must be between 0.1 and 4.";
   if (!(clahe_clip >= 0 && clahe_clip <= 16)) throw "CLAHE clip must be between 0 and 16.";
+  if (!(incoming.speed >= 0 && incoming.speed <= 10000)) throw "Speed must be between 0 and 10000 mm/s.";
+  if (!(incoming.power_percent >= 0 && incoming.power_percent <= 100)) throw "Power must be between 0 and 100%.";
+  if (!(incoming.dpi >= 0 && incoming.dpi <= 10000)) throw "DPI must be between 0 and 10000.";
+};
+
+const previewImage = (label: string, width: number, height: number) => {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="#171717"/><path d="M0 ${height * .25}H${width}M0 ${height * .5}H${width}M0 ${height * .75}H${width}M${width * .25} 0V${height}M${width * .5} 0V${height}M${width * .75} 0V${height}" stroke="#8491a5" stroke-width="${Math.max(2, width / 180)}"/><text x="50%" y="52%" fill="#eee" font-size="${Math.max(20, width / 16)}" text-anchor="middle" font-family="sans-serif">${label}</text></svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 };
 
 const firstPresetOf = (laserId: string | null) =>
@@ -153,7 +164,9 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
 
     case "add_laser": {
       const name = validateLaserName(String(args?.name ?? ""));
-      const created: Laser = { id: `laser-${++sequence}`, name };
+      const watts = Number(args?.watts ?? 0);
+      if (!(watts >= 0 && watts <= 1000)) throw "Laser watts must be between 0 and 1000.";
+      const created: Laser = { id: `laser-${++sequence}`, name, watts };
       lasers = [...lasers, created];
       selectedLaser = created.id;
       selectedPreset = null;
@@ -166,7 +179,9 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
       const id = String(args?.id ?? "");
       laserOf(id);
       const name = validateLaserName(String(args?.name ?? ""), id);
-      lasers = lasers.map((item) => (item.id === id ? { ...item, name } : item));
+      const watts = Number(args?.watts ?? 0);
+      if (!(watts >= 0 && watts <= 1000)) throw "Laser watts must be between 0 and 1000.";
+      lasers = lasers.map((item) => (item.id === id ? { ...item, name, watts } : item));
       status = `Renamed laser to “${name}”`;
       error = null;
       return snapshot() as T;
@@ -237,6 +252,9 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
         note: incoming.note,
         calibration: { ...incoming.calibration },
         processing: { ...incoming.processing },
+        speed: incoming.speed,
+        power_percent: incoming.power_percent,
+        dpi: incoming.dpi,
       };
       presets = presets.map((item) => (item.id === next.id ? next : item));
       status = `Saved “${next.name}”`;
@@ -268,6 +286,29 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
       error = null;
       return snapshot() as T;
     }
+
+    case "preset_preview": {
+      const match = presetOf(String(args?.id ?? ""));
+      const width = match.calibration.block_size * match.calibration.columns;
+      const height = match.calibration.block_size * match.calibration.rows;
+      const result: PresetPreview = {
+        scan_data_url: match.has_scan ? previewImage("Calibration scan", width, height) : null,
+        gauge_data_url: previewImage("Sample gauge", width, height),
+        width,
+        height,
+      };
+      return result as T;
+    }
+
+    case "open_scan_archive":
+      status = "Opened the archived scans folder.";
+      error = null;
+      return snapshot() as T;
+
+    case "clear_scan_archive":
+      status = "Archived scans cleared.";
+      error = null;
+      return snapshot() as T;
 
     case "export_gauge": {
       const id = String(args?.id ?? "");

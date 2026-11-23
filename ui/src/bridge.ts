@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { mockCall } from "./mock";
-import type { Preset, ProcessResult, State } from "./types";
+import type { Preset, PresetPreview, ProcessResult, State } from "./types";
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -22,8 +22,8 @@ export const bridge = {
     return listen<State>("state", (event) => handler(event.payload));
   },
 
-  addLaser: (name: string) => call<State>("add_laser", { name }),
-  renameLaser: (id: string, name: string) => call<State>("rename_laser", { id, name }),
+  addLaser: (name: string, watts: number) => call<State>("add_laser", { name, watts }),
+  renameLaser: (id: string, name: string, watts: number) => call<State>("rename_laser", { id, name, watts }),
   removeLaser: (id: string) => call<State>("remove_laser", { id }),
   selectLaser: (id: string) => call<State>("select_laser", { id }),
 
@@ -33,6 +33,9 @@ export const bridge = {
   removePreset: (id: string) => call<State>("remove_preset", { id }),
   importScan: (id: string, path: string) => call<State>("import_scan", { id, path }),
   exportGauge: (id: string, path: string) => call<State>("export_gauge", { id, path }),
+  presetPreview: (id: string) => call<PresetPreview>("preset_preview", { id }),
+  openScanArchive: () => call<State>("open_scan_archive"),
+  clearScanArchive: () => call<State>("clear_scan_archive"),
 
   processPhoto: (tab: string, path: string) => call<ProcessResult>("process_photo", { tab, path }),
   saveEngraving: (tab: string, path: string) => call<State>("save_engraving", { tab, path }),

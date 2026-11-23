@@ -24,6 +24,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   several images can be prepared in the same window.
 - Store schema 2 for lasers and laser-bound presets, with a one-time migration of
   existing presets onto a generated laser.
+- Input photos in PNG, JPEG, WebP, BMP, and TIFF.
+- Laser wattage, shown as `name 40W`, with the preset power percentage resolved
+  to the resulting wattage in brackets.
+- Preset recording settings: engraving speed (mm/s), power (%), and DPI.
+- Side-by-side calibration scan and sample gauge previews in the Presets area.
+- Archived calibration scans with readable names, plus open and empty archive
+  commands.
 - Creality Falcon2 Pro S 22W calibration instructions.
 
 ### Changed

@@ -1,6 +1,6 @@
 /** Shared IPC types and defaults. Mirrors docs/tauri-ipc.md; keep in sync with the Rust host. */
 
-export type Laser = { id: string; name: string };
+export type Laser = { id: string; name: string; watts: number };
 
 export type CalibrationSpec = {
   block_size: number; // pixels, 32..4096
@@ -24,7 +24,17 @@ export type Preset = {
   note: string;
   calibration: CalibrationSpec;
   processing: ProcessingSettings;
+  speed: number;
+  power_percent: number;
+  dpi: number;
   has_scan: boolean;
+};
+
+export type PresetPreview = {
+  scan_data_url: string | null;
+  gauge_data_url: string;
+  width: number;
+  height: number;
 };
 
 export type State = {
@@ -47,7 +57,7 @@ export type ProcessResult = {
 };
 
 /** Editable part of a preset. */
-export type Draft = Pick<Preset, "name" | "note" | "calibration" | "processing">;
+export type Draft = Pick<Preset, "name" | "note" | "calibration" | "processing" | "speed" | "power_percent" | "dpi">;
 
 /** One document tab: its own image, preset choice and processed result. */
 export type DocTab = {
@@ -81,7 +91,19 @@ export const draftOf = (preset: Preset): Draft => ({
   note: preset.note,
   calibration: { ...preset.calibration },
   processing: { ...preset.processing },
+  speed: preset.speed,
+  power_percent: preset.power_percent,
+  dpi: preset.dpi,
 });
+
+export const laserLabel = (laser: Laser): string =>
+  laser.watts > 0 ? `${laser.name} ${laser.watts}W` : laser.name;
+
+export const powerWatts = (preset: Preset | Draft, laser: Laser | null): number =>
+  (laser?.watts ?? 0) * preset.power_percent / 100;
+
+export const formatPower = (percent: number, watts: number): string =>
+  percent === 0 ? "—" : watts === 0 ? `${percent}%` : `${percent}% (${Number(watts.toFixed(2))} W)`;
 
 /** A result stays valid only for the saved preset it was produced with. */
 export const presetKey = (preset: Preset) =>
@@ -96,4 +118,7 @@ export const presetKey = (preset: Preset) =>
     preset.processing.gamma,
     preset.processing.clahe_clip,
     preset.processing.color_method,
+    preset.speed,
+    preset.power_percent,
+    preset.dpi,
   ].join("|");

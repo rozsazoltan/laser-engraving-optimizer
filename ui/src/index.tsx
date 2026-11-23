@@ -1,4 +1,4 @@
-import { Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { bridge, errorText } from "./bridge";
 import { Chrome } from "./chrome";
 import { DocStrip, EngraveArea } from "./engrave";
@@ -7,12 +7,14 @@ import { PresetsArea } from "./presets";
 import { Splash, type SplashPhase } from "./splash";
 import {
   draftOf,
+  laserLabel,
   presetKey,
   type Area,
   type CalibrationSpec,
   type DocTab,
   type Draft,
   type ProcessResult,
+  type PresetPreview,
   type ProcessingSettings,
   type State,
 } from "./types";
@@ -115,6 +117,8 @@ export default function App() {
   const [pending, setPending] = createSignal<Pending | null>(null);
   const [phase, setPhase] = createSignal<SplashPhase | "gone">("loading");
   const [bootError, setBootError] = createSignal("");
+  const [previewCache, setPreviewCache] = createSignal<Record<string, PresetPreview>>({});
+  const [previewLoading, setPreviewLoading] = createSignal(false);
 
   let unlisten: (() => void) | null = null;
 
@@ -149,6 +153,25 @@ export default function App() {
     const tab = activeTab();
     if (!tab?.presetId) return null;
     return laserPresets().find((item) => item.id === tab.presetId) ?? null;
+  });
+
+  let previewRequest = 0;
+  async function refreshPresetPreview(id: string) {
+    const request = ++previewRequest;
+    setPreviewLoading(true);
+    try {
+      const preview = await bridge.presetPreview(id);
+      setPreviewCache((cache) => ({ ...cache, [id]: preview }));
+    } catch {
+      // Preview failure must not block editing or replace host status.
+    } finally {
+      if (request === previewRequest) setPreviewLoading(false);
+    }
+  }
+
+  createEffect(() => {
+    const id = selectedPreset()?.id;
+    if (id) void refreshPresetPreview(id);
   });
 
   const draftDirty = createMemo(() => {
@@ -313,14 +336,14 @@ export default function App() {
 
   // ---- lasers -------------------------------------------------------------
 
-  const addLaser = (name: string) =>
+  const addLaser = (name: string, watts: number) =>
     run("laser-add", async () => {
-      adopt(await bridge.addLaser(name));
+      adopt(await bridge.addLaser(name, watts));
     });
 
-  const renameLaser = (id: string, name: string) =>
+  const renameLaser = (id: string, name: string, watts: number) =>
     run("laser-rename", async () => {
-      adopt(await bridge.renameLaser(id, name), { keepDraft: true });
+      adopt(await bridge.renameLaser(id, name, watts), { keepDraft: true });
     });
 
   function removeLaser(id: string) {
@@ -373,8 +396,15 @@ export default function App() {
         note: edited.note,
         calibration: { ...edited.calibration },
         processing: { ...edited.processing },
+        speed: edited.speed,
+        power_percent: edited.power_percent,
+        dpi: edited.dpi,
       });
       adopt(next);
+      const saved = next.presets.find((item) => item.id === current.id);
+      if (saved && JSON.stringify(saved.calibration) !== JSON.stringify(current.calibration)) {
+        void refreshPresetPreview(saved.id);
+      }
     });
   }
 
@@ -401,7 +431,7 @@ export default function App() {
     });
   }
 
-  function editText(patch: Partial<Pick<Draft, "name" | "note">>) {
+  function editText(patch: Partial<Draft>) {
     const current = draft();
     if (!current) return;
     setDraft({ ...current, ...patch });
@@ -429,7 +459,16 @@ export default function App() {
       const path = await bridge.pickOpenFile("Choose calibration scan", ["png", "jpg", "jpeg"]);
       if (!path) return;
       adopt(await bridge.importScan(current.id, path), { keepDraft: true });
+      void refreshPresetPreview(current.id);
     });
+  }
+
+  function openScanArchive() {
+    void run("archive-open", async () => adopt(await bridge.openScanArchive(), { keepDraft: true }));
+  }
+
+  function clearScanArchive() {
+    void run("archive-clear", async () => adopt(await bridge.clearScanArchive(), { keepDraft: true }));
   }
 
   function exportGauge() {
@@ -628,6 +667,8 @@ export default function App() {
                     dirty={draftDirty()}
                     busy={busy()}
                     working={working()}
+                    preview={selectedPreset() ? previewCache()[selectedPreset()!.id] ?? null : null}
+                    previewLoading={previewLoading()}
                     onScope={selectLaser}
                     onSelect={selectPreset}
                     onAdd={addPreset}
@@ -639,6 +680,8 @@ export default function App() {
                     onRemove={removePreset}
                     onImportScan={importScan}
                     onExportGauge={exportGauge}
+                    onOpenArchive={openScanArchive}
+                    onClearArchive={clearScanArchive}
                     onOpenLasers={() => setArea("lasers")}
                   />
                 </Show>
@@ -646,7 +689,7 @@ export default function App() {
                 <Show when={area() === "engrave"}>
                   <EngraveArea
                     tab={activeTab()}
-                    laserName={selectedLaser()?.name ?? null}
+                    laserName={selectedLaser() ? laserLabel(selectedLaser()!) : null}
                     presets={laserPresets()}
                     preset={tabPreset()}
                     presetSelected={presetSelected()}

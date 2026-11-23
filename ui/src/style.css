@@ -654,6 +654,12 @@ select.input {
   flex: 1;
 }
 
+.laser-add .watts-input,
+.laser-row .watts-input {
+  flex: 0 0 104px;
+  max-width: 104px;
+}
+
 .laser-list {
   list-style: none;
   margin: 0;
@@ -831,6 +837,54 @@ select.input {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.scan-previews {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.scan-preview-slot {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.scan-preview-slot img,
+.scan-placeholder {
+  display: block;
+  width: 100%;
+  aspect-ratio: var(--scan-ratio, 1);
+  object-fit: contain;
+  max-height: 220px;
+}
+
+.scan-placeholder {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  background: #111;
+}
+
+.preview-size {
+  margin: 7px 0 12px;
+}
+
+.power-hint {
+  align-self: end;
+  margin-bottom: 8px;
+}
+
+.archive-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--muted);
 }
 
 .scan-state {

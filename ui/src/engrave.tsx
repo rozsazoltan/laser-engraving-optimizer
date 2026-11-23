@@ -196,6 +196,7 @@ export function EngraveArea(props: EngraveProps) {
                 </button>
               </Show>
             </div>
+            <p class="hint">PNG, JPG, WebP, BMP, or TIFF. Convert HEIC photos first.</p>
 
             <Show when={props.preset && !props.presetSelected}>
               <div class="scope-warning">
