@@ -332,6 +332,23 @@ impl Calibration {
                 .clamp(0.0, 255.0) as u8])
         })
     }
+    /// Sample table in the column order of the Python reference report.
+    pub fn report_csv(&self) -> String {
+        let mut csv = String::from(
+            "input_gray,local_wood_gray,engraved_gray,observed_darkness,fitted_darkness\n",
+        );
+        for s in &self.samples {
+            csv.push_str(&format!(
+                "{},{:.2},{:.2},{:.2},{:.2}\n",
+                s.input_lightness,
+                s.background_lightness,
+                s.engraved_lightness,
+                s.measured_darkness,
+                s.fitted_darkness
+            ));
+        }
+        csv
+    }
 }
 
 #[cfg(test)]

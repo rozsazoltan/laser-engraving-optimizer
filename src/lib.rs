@@ -108,6 +108,13 @@ mod reference_tests {
             calibration.median_whiteness,
             c["median_whiteness"].as_f64().unwrap()
         );
+        let csv = calibration.report_csv();
+        let mut csv_lines = csv.lines();
+        assert_eq!(
+            csv_lines.next(),
+            Some("input_gray,local_wood_gray,engraved_gray,observed_darkness,fitted_darkness")
+        );
+        assert_eq!(csv_lines.count(), calibration.samples.len());
         for (sample, expected) in calibration
             .samples
             .iter()

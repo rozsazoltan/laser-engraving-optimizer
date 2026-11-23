@@ -16,8 +16,15 @@ const PREVIEW_EDGE: u32 = 640;
 enum JobResult {
     InputLoaded(PathBuf, Result<RgbImage, String>),
     Imported(PresetStore, Result<(), String>),
-    Processed(Result<(GrayImage, GrayImage), String>),
-    Saved(Result<(), String>),
+    Processed(Result<ProcessedOutput, String>),
+    Saved(Result<String, String>),
+}
+
+struct ProcessedOutput {
+    engraving: GrayImage,
+    preview: GrayImage,
+    simulation: GrayImage,
+    report: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -100,6 +107,8 @@ pub struct OptimizerApp {
     input_preview: Option<TextureHandle>,
     result_preview: Option<TextureHandle>,
     result: Option<GrayImage>,
+    simulation: Option<GrayImage>,
+    report_csv: Option<String>,
     job: Option<Receiver<JobResult>>,
     status: String,
     error: Option<String>,
@@ -116,6 +125,8 @@ impl OptimizerApp {
             input_preview: None,
             result_preview: None,
             result: None,
+            simulation: None,
+            report_csv: None,
             job: None,
             status: String::new(),
             error: None,
@@ -169,6 +180,8 @@ impl OptimizerApp {
     fn clear_result(&mut self) {
         self.result = None;
         self.result_preview = None;
+        self.simulation = None;
+        self.report_csv = None;
     }
 
     fn set_error(&mut self, error: impl ToString) {
@@ -231,7 +244,12 @@ impl OptimizerApp {
                 let photo = load_rgb(path)?;
                 let processed = process_photo(&photo, &calibration, &preset.processing)?;
                 let preview = thumbnail_gray(&processed.engraving);
-                Ok((processed.engraving, preview))
+                Ok(ProcessedOutput {
+                    engraving: processed.engraving,
+                    preview,
+                    simulation: processed.simulation,
+                    report: calibration.report_csv(),
+                })
             })();
             JobResult::Processed(result)
         });
@@ -254,7 +272,7 @@ impl OptimizerApp {
                     .save_with_format(path, image::ImageFormat::Png)
                     .map_err(|error| format!("Could not save calibration PNG: {error}"))
             });
-            JobResult::Saved(result)
+            JobResult::Saved(result.map(|()| "Calibration gauge PNG saved.".to_string()))
         });
     }
 
@@ -281,15 +299,29 @@ impl OptimizerApp {
         }
     }
 
-    fn save_output(&mut self, path: PathBuf) {
-        let Some(image) = self.result.clone() else {
+    fn save_png(&mut self, image: Option<GrayImage>, path: PathBuf, label: &'static str) {
+        let Some(image) = image else {
             return;
         };
         self.start_job(move || {
             JobResult::Saved(
                 image
                     .save_with_format(path, image::ImageFormat::Png)
-                    .map_err(|e| format!("Could not save PNG: {e}")),
+                    .map_err(|e| format!("Could not save PNG: {e}"))
+                    .map(|()| format!("{label} PNG saved.")),
+            )
+        });
+    }
+
+    fn save_report(&mut self, path: PathBuf) {
+        let Some(csv) = self.report_csv.clone() else {
+            return;
+        };
+        self.start_job(move || {
+            JobResult::Saved(
+                std::fs::write(path, csv)
+                    .map_err(|e| format!("Could not save report CSV: {e}"))
+                    .map(|()| "Calibration report CSV saved.".to_string()),
             )
         });
     }
@@ -336,10 +368,12 @@ impl OptimizerApp {
             Ok(JobResult::Processed(result)) => {
                 self.job = None;
                 match result {
-                    Ok((image, preview)) => {
-                        let dimensions = image.dimensions();
-                        self.result_preview = Some(gray_texture(ctx, &preview, "result"));
-                        self.result = Some(image);
+                    Ok(output) => {
+                        let dimensions = output.engraving.dimensions();
+                        self.result_preview = Some(gray_texture(ctx, &output.preview, "result"));
+                        self.result = Some(output.engraving);
+                        self.simulation = Some(output.simulation);
+                        self.report_csv = Some(output.report);
                         self.status = format!("Ready · {} × {} px", dimensions.0, dimensions.1);
                     }
                     Err(error) => self.set_error(error),
@@ -348,7 +382,7 @@ impl OptimizerApp {
             Ok(JobResult::Saved(result)) => {
                 self.job = None;
                 match result {
-                    Ok(()) => self.status = "PNG saved.".into(),
+                    Ok(message) => self.status = message,
                     Err(error) => self.set_error(error),
                 }
             }
@@ -582,7 +616,17 @@ impl eframe::App for OptimizerApp {
                     if columns[1].add_enabled(!busy, egui::Button::new("Save engraving PNG…")).clicked() {
                         if let Some(path) = rfd::FileDialog::new().set_file_name("engraving.png")
                             .add_filter("PNG image", &["png"]).save_file()
-                        { self.save_output(path); }
+                        { self.save_png(self.result.clone(), path, "Engraving"); }
+                    }
+                    if columns[1].add_enabled(!busy && self.simulation.is_some(), egui::Button::new("Save simulation PNG…")).clicked() {
+                        if let Some(path) = rfd::FileDialog::new().set_file_name("simulation.png")
+                            .add_filter("PNG image", &["png"]).save_file()
+                        { self.save_png(self.simulation.clone(), path, "Simulation"); }
+                    }
+                    if columns[1].add_enabled(!busy && self.report_csv.is_some(), egui::Button::new("Save calibration report CSV…")).clicked() {
+                        if let Some(path) = rfd::FileDialog::new().set_file_name("calibration_report.csv")
+                            .add_filter("CSV file", &["csv"]).save_file()
+                        { self.save_report(path); }
                     }
                     columns[1].add_space(8.0);
                     columns[1].heading(format!("Engraving · {width} × {height} px"));
