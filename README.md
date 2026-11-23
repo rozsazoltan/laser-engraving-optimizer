@@ -4,27 +4,53 @@ For the Creality Falcon2 Pro S 22W with LightBurn.
 
 ## Windows desktop application
 
-The Rust desktop application replaces the previous Python scripts and runs
-locally without Python or an OpenCV runtime.
+The desktop application is called **engraving**. It is a Tauri 2 window with a
+SolidJS frontend (`ui/`) over the local Rust image-processing core. It runs
+without Python or an OpenCV runtime.
 
 ### Build
 
-Prerequisites: the Rust MSVC toolchain and Visual Studio C++ Build Tools with the
-Windows SDK.
+Prerequisites: Node.js with pnpm, the Rust MSVC toolchain, and Visual Studio C++
+Build Tools with the Windows SDK.
+
+The frontend must be built before the executable, because Tauri embeds
+`ui/dist`.
 
 ```powershell
+pnpm --dir ui install
+pnpm --dir ui build
 cargo build --locked --release --target x86_64-pc-windows-msvc
 .\target\x86_64-pc-windows-msvc\release\laser-engraving-optimizer.exe
 ```
 
 The executable is built on Windows. Do not distribute a debug build as the final
-application.
+application; the debug build also opens a console window.
 
-### Calibration and presets
+### Development
 
-1. Select **New preset**, enter a name and an optional note, and set the block size,
-   rows, columns, and curve exponent. Defaults are `400`, `6`, `6`, and `1.8`.
-   Use **Save preset** before importing a scan or choosing an input photo.
+```powershell
+pnpm --dir ui install
+cargo tauri dev
+```
+
+`cargo tauri dev` starts Vite on port 5173 and opens the application window. For
+frontend work only, `pnpm --dir ui dev` serves the same interface in a browser
+with an in-memory mock of the host, so no Rust build is needed.
+
+### Lasers, presets and engraving
+
+The interface has three areas on the top bar, following the hierarchy
+laser → preset → image:
+
+**Lasers** registers your machines. A laser has only a unique name; it carries no
+settings. Every preset belongs to exactly one laser, because a calibration is
+valid only for that machine.
+
+**Presets** holds the presets of the selected laser:
+
+1. Create a preset, enter a name and an optional note, and set the block size,
+   rows, columns, and curve exponent. Defaults are `400`, `6`, `6`, and `1.8`,
+   and gamma, CLAHE, and the colour method live here too.
 2. Export the calibration gauge as a PNG. Engrave it using the laser settings
    that this preset will represent. A paper print alone does not measure the
    laser's response on your material.
@@ -32,13 +58,25 @@ application.
    grid edges without rotating or stretching individual cells. The scan must
    match the gauge dimensions: `columns × block size` by `rows × block size`
    pixels (`2400 × 2400` with the defaults).
-4. Use **Choose calibration scan…** to import the scan into the saved preset.
-   The application keeps a managed copy, so moving the original scan does not
-   break the preset.
-5. Choose an input photo, process it, inspect the result, and save the engraving
-   image as a PNG for LightBurn. **Save simulation PNG…** exports the calibrated
-   appearance preview; **Save calibration report CSV…** exports the measured and
-   fitted sample table of the current calibration.
+4. Use **Import scan…** to attach the scan to the saved preset. The application
+   keeps a managed copy, so moving the original scan does not break the preset.
+
+A laser that still owns presets cannot be deleted, so remove its presets first.
+
+**Engrave** is where images are processed. Each tab is one image with its own
+preset choice and its own result, so several images can be prepared side by
+side in one window. Pick a preset of the selected laser, choose an input photo,
+process it, and save the engraving as a PNG for LightBurn. The same tab exports
+the calibrated simulation PNG and the calibration report CSV of the measured and
+fitted sample table.
+
+Changing the preset, its settings, or the laser makes the previewed result stale:
+save nothing from it and process the photo again.
+
+Use a separate preset for each material and laser-setting combination. Keep
+the geometry and exponent consistent with the engraved gauge. The
+application rejects a scan with different dimensions; it does not correct
+perspective or align a photograph automatically.
 
 Use a separate preset for each material and laser-setting combination.
 Keep the geometry and exponent consistent with the engraved gauge. The
@@ -51,11 +89,13 @@ both the settings and their scans. Use one application instance at a time;
 concurrent preset editing is not supported. An invalid preset file is reported
 rather than silently replaced.
 
-### Check the Rust implementation
+### Check the implementation
 
 ```powershell
 cargo test --locked
 cargo fmt --all -- --check
+pnpm --dir ui exec tsc --noEmit
+pnpm --dir ui build
 ```
 
 Reference fixtures cover calibration samples and lookup tables, gauge geometry,

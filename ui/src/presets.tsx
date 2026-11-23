@@ -1,0 +1,299 @@
+import { For, Show } from "solid-js";
+import { COLOR_METHODS, type CalibrationSpec, type ColorMethod, type Draft, type Laser, type Preset, type ProcessingSettings } from "./types";
+import { Field, NumberField } from "./fields";
+
+type Props = {
+  lasers: Laser[];
+  selectedLaser: string | null;
+  presets: Preset[];
+  preset: Preset | null;
+  draft: Draft | null;
+  dirty: boolean;
+  busy: boolean;
+  working: string | null;
+  onScope: (laserId: string) => void;
+  onSelect: (id: string) => void;
+  onAdd: () => void;
+  onEdit: (patch: Partial<Draft>) => void;
+  onGeometry: (patch: Partial<CalibrationSpec>) => void;
+  onProcessing: (patch: Partial<ProcessingSettings>) => void;
+  onSave: () => void;
+  onRevert: () => void;
+  onRemove: () => void;
+  onImportScan: () => void;
+  onExportGauge: () => void;
+  onOpenLasers: () => void;
+};
+
+export function PresetsArea(props: Props) {
+  const laser = () => props.lasers.find((item) => item.id === props.selectedLaser) ?? null;
+  const gaugeWidth = () => (props.draft ? props.draft.calibration.block_size * props.draft.calibration.columns : 0);
+  const gaugeHeight = () => (props.draft ? props.draft.calibration.block_size * props.draft.calibration.rows : 0);
+
+  return (
+    <section class="area presets-area" aria-label="Presets">
+      <Show
+        when={props.lasers.length > 0}
+        fallback={
+          <div class="empty">
+            <span class="empty-mark" aria-hidden="true" />
+            <h2>No lasers yet</h2>
+            <p>A preset needs a laser first. Register the machine, then create presets for it.</p>
+            <button type="button" class="btn" onClick={props.onOpenLasers}>
+              Open Lasers
+            </button>
+          </div>
+        }
+      >
+        <div class="area-head">
+        <div>
+          <h1>Presets</h1>
+          <p class="area-note">
+            Calibration and processing for one material on{" "}
+            <strong>{laser()?.name ?? "the selected laser"}</strong>.
+          </p>
+        </div>
+        <div class="area-controls">
+          <label class="scope">
+            <span class="field-label">Laser scope</span>
+            <select
+              class="input"
+              aria-label="Laser scope for presets"
+              disabled={props.busy}
+              onChange={(event) => {
+                const id = event.currentTarget.value;
+                event.currentTarget.value = props.selectedLaser ?? "";
+                if (id !== props.selectedLaser) props.onScope(id);
+              }}
+            >
+              <For each={props.lasers}>
+                {(item) => (
+                  <option value={item.id} selected={item.id === props.selectedLaser}>
+                    {item.name}
+                  </option>
+                )}
+              </For>
+            </select>
+          </label>
+          <button type="button" class="btn" disabled={props.busy || !props.selectedLaser} onClick={props.onAdd}>
+            New preset
+          </button>
+        </div>
+      </div>
+
+      <div class="preset-split">
+        <Show
+          when={props.presets.length > 0}
+          fallback={
+            <div class="preset-side empty-side">
+              <p class="hint">No presets on this laser yet.</p>
+              <button type="button" class="btn small" disabled={props.busy} onClick={props.onAdd}>
+                Create the first preset
+              </button>
+            </div>
+          }
+        >
+          <ul class="preset-list" aria-label="Presets on this laser">
+            <For each={props.presets}>
+              {(item) => (
+                <li>
+                  <button
+                    type="button"
+                    class={`preset-row ${item.id === props.preset?.id ? "selected" : ""}`}
+                    disabled={props.busy}
+                    onClick={() => props.onSelect(item.id)}
+                    aria-pressed={item.id === props.preset?.id}
+                  >
+                    <span class="preset-name">{item.name}</span>
+                    <span class="preset-meta">
+                      {item.has_scan ? "scan ready" : "no scan"}
+                      <Show when={props.dirty && item.id === props.preset?.id}>
+                        <span class="preset-dirty" aria-label="unsaved changes" />
+                      </Show>
+                    </span>
+                  </button>
+                </li>
+              )}
+            </For>
+          </ul>
+        </Show>
+
+        <Show when={props.draft && props.preset} fallback={<div class="preset-editor" />}>
+          {(edited) => {
+            const current = () => props.preset!;
+            return (
+              <div class="preset-editor">
+                <div class="editor-head">
+                  <span class="section-label">
+                    Editing preset
+                    <Show when={props.dirty}>
+                      <b class="dirty-flag">unsaved</b>
+                    </Show>
+                  </span>
+                  <div class="row-actions">
+                    <button type="button" class="btn primary" disabled={!props.dirty || props.busy} onClick={props.onSave}>
+                      {props.working === "save" ? "Saving…" : "Save"}
+                    </button>
+                    <button type="button" class="btn" disabled={!props.dirty || props.busy} onClick={props.onRevert}>
+                      Revert
+                    </button>
+                    <button type="button" class="btn danger" disabled={props.busy} onClick={props.onRemove}>
+                      {props.working === "preset-remove" ? "Removing…" : "Remove"}
+                    </button>
+                  </div>
+                </div>
+
+                <div class="grid-2">
+                  <Field label="Name" flag={props.dirty}>
+                    <input
+                      class="input"
+                      type="text"
+                      autocomplete="off"
+                      spellcheck={false}
+                      disabled={props.busy}
+                      value={edited().name}
+                      onInput={(event) => props.onEdit({ name: event.currentTarget.value })}
+                    />
+                  </Field>
+                  <Field label="Note">
+                    <input
+                      class="input"
+                      type="text"
+                      autocomplete="off"
+                      placeholder="Material, thickness, lens"
+                      disabled={props.busy}
+                      value={edited().note}
+                      onInput={(event) => props.onEdit({ note: event.currentTarget.value })}
+                    />
+                  </Field>
+                </div>
+
+                <div class="editor-section">
+                  <div class="section-head">
+                    <span class="section-label">Calibration geometry</span>
+                    <span class="section-note mono">
+                      {gaugeWidth()} × {gaugeHeight()} px
+                    </span>
+                  </div>
+                  <div class="grid-2">
+                    <NumberField
+                      label="Block size"
+                      value={edited().calibration.block_size}
+                      min={32}
+                      max={4096}
+                      step={1}
+                      disabled={props.busy}
+                      onValue={(block_size) => props.onGeometry({ block_size })}
+                    />
+                    <NumberField
+                      label="Exponent"
+                      value={edited().calibration.exponent}
+                      min={0.1}
+                      max={8}
+                      step={0.05}
+                      disabled={props.busy}
+                      onValue={(exponent) => props.onGeometry({ exponent })}
+                    />
+                    <NumberField
+                      label="Rows"
+                      value={edited().calibration.rows}
+                      min={2}
+                      max={64}
+                      step={1}
+                      disabled={props.busy}
+                      onValue={(rows) => props.onGeometry({ rows })}
+                    />
+                    <NumberField
+                      label="Columns"
+                      value={edited().calibration.columns}
+                      min={2}
+                      max={64}
+                      step={1}
+                      disabled={props.busy}
+                      onValue={(columns) => props.onGeometry({ columns })}
+                    />
+                  </div>
+                </div>
+
+                <div class="editor-section">
+                  <div class="section-head">
+                    <span class="section-label">Processing</span>
+                  </div>
+                  <div class="grid-2">
+                    <NumberField
+                      label="Gamma"
+                      value={edited().processing.gamma}
+                      min={0.1}
+                      max={4}
+                      step={0.05}
+                      disabled={props.busy}
+                      onValue={(gamma) => props.onProcessing({ gamma })}
+                    />
+                    <NumberField
+                      label="CLAHE clip"
+                      value={edited().processing.clahe_clip}
+                      min={0}
+                      max={16}
+                      step={0.1}
+                      disabled={props.busy}
+                      onValue={(clahe_clip) => props.onProcessing({ clahe_clip })}
+                    />
+                    <Field label="Colour method" span>
+                      <select
+                        class="input"
+                        disabled={props.busy}
+                        onChange={(event) =>
+                          props.onProcessing({ color_method: event.currentTarget.value as ColorMethod })
+                        }
+                      >
+                        <For each={COLOR_METHODS}>
+                          {(method) => (
+                            <option
+                              value={method}
+                              selected={method === edited().processing.color_method}
+                            >
+                              {method}
+                            </option>
+                          )}
+                        </For>
+                      </select>
+                    </Field>
+                  </div>
+                </div>
+
+                <div class="editor-section">
+                  <div class="section-head">
+                    <span class="section-label">Calibration scan</span>
+                    <span class={`scan-state ${current().has_scan ? "ready" : ""}`}>
+                      <span class={`dot ${current().has_scan ? "on" : ""}`} aria-hidden="true" />
+                      {current().has_scan ? "Scan ready" : "No scan yet"}
+                    </span>
+                  </div>
+                  <div class="row-actions">
+                    <button type="button" class="btn" disabled={props.busy} onClick={props.onImportScan}>
+                      {props.working === "import" ? "Importing…" : "Import calibration scan…"}
+                    </button>
+                    <button type="button" class="btn" disabled={props.busy} onClick={props.onExportGauge}>
+                      {props.working === "gauge" ? "Exporting…" : "Export gauge PNG…"}
+                    </button>
+                  </div>
+                  <p class="hint">
+                    Engrave the exported gauge, then import a cropped, aligned photo of it at exactly{" "}
+                    <strong class="mono">
+                      {gaugeWidth()} × {gaugeHeight()} px
+                    </strong>
+                    . engraving never warps the scan to fit.
+                  </p>
+                  <Show when={props.dirty}>
+                    <p class="hint warn">Scans and gauges use the saved calibration. Save to apply unsaved values.</p>
+                  </Show>
+                </div>
+              </div>
+            );
+          }}
+        </Show>
+      </div>
+      </Show>
+    </section>
+  );
+}

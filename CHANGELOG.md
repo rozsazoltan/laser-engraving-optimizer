@@ -15,19 +15,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   persistence and failure safety, and desktop interaction state.
 - Local wood-background calibration for every engraved gauge patch.
 - Monotonic laser-response fitting and stable inverse tone mapping.
-- Calibration diagnostics in `calibration_report.csv` and `calibration_curve.png`.
-- Calibration report CSV and simulation PNG export from the desktop application.
-- Optional `--curve-exponent`, `--gamma`, `--clahe`, and `--color-method` parameters.
-- Optional linear tone spacing for calibration gauges (`--curve-exponent 1.0`).
+- Calibration report CSV export from the desktop application.
+- Tauri 2 desktop window named `engraving` with a SolidJS frontend and a startup
+  loading screen.
+- Laser registry for the owned machines; every preset belongs to one laser, and a
+  laser that still owns presets cannot be removed.
+- Separate Lasers, Presets, and Engrave areas, with one document tab per image so
+  several images can be prepared in the same window.
+- Store schema 2 for lasers and laser-bound presets, with a one-time migration of
+  existing presets onto a generated laser.
 - Creality Falcon2 Pro S 22W calibration instructions.
 
 ### Changed
 - Simulator uses the same fitted response as the optimizer.
 - Replaced the Python runtime and OpenCV dependency with a self-contained Rust build.
+- Desktop frontend moved from the embedded egui interface to a Tauri webview that
+  embeds the SolidJS build from `ui/dist`.
+- Calibration presets are bound to a laser, and the laser selection scopes which
+  presets are visible.
 
 ### Removed
 - Python reference scripts, `requirements.txt`, and the Python toolchain pin;
   committed numerical fixtures preserve their behaviour as test references.
+- `--curve-exponent`, `--gamma`, `--clahe`, and `--color-method` command-line
+  parameters, and the Python `calibration_curve.png` output.
 
 ### Fixed
 - Incorrect whole-image white reference affected by illumination gradient.

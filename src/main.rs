@@ -3,21 +3,36 @@
     windows_subsystem = "windows"
 )]
 
-fn main() -> eframe::Result {
-    let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1120.0, 780.0])
-            .with_min_inner_size([820.0, 620.0])
-            .with_title("Laser Engraving Optimizer"),
-        ..Default::default()
-    };
-    eframe::run_native(
-        "Laser Engraving Optimizer",
-        options,
-        Box::new(|cc| {
-            Ok(Box::new(laser_engraving_optimizer::app::OptimizerApp::new(
-                cc,
-            )))
-        }),
-    )
+use laser_engraving_optimizer::host;
+
+fn main() {
+    tauri::Builder::default()
+        .setup(|app| {
+            host::init(app).map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            host::get_state,
+            host::add_laser,
+            host::rename_laser,
+            host::remove_laser,
+            host::select_laser,
+            host::select_preset,
+            host::add_preset,
+            host::save_preset,
+            host::remove_preset,
+            host::import_scan,
+            host::export_gauge,
+            host::process_photo,
+            host::save_engraving,
+            host::save_simulation,
+            host::save_report,
+            host::pick_open_file,
+            host::pick_save_file,
+            host::minimize_window,
+            host::toggle_maximize_window,
+            host::close_window,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running engraving");
 }
