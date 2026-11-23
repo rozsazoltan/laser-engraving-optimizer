@@ -114,14 +114,48 @@ event with the same payload. Rejections are plain strings.
 | `save_preset` | `preset` | Validates id, laser id, ranges, uniqueness. |
 | `remove_preset` | `id` | Removes its managed scan copy. |
 | `import_scan` | `id`, `path` | Validates the decoded image against the preset's exact gauge size; stores a managed copy. |
+| `remove_scan` | `id` | Moves the preset's managed scan into the archive. The preset stays saved without a scan. |
 | `export_gauge` | `id`, `path` | Writes the preset's calibration gauge PNG. |
 | `preset_preview` | `id` | Returns `PresetPreview`: the stored scan and the generated gauge, both scaled to the same long edge, plus the gauge pixel size. Fetched when a preset is selected or its scan changes; never part of `State`. |
+| `scan_geometry` | `id` | Returns `ScanGeometry` for the preset's gauge: pixel size plus every sampled region in gauge coordinates. Needs no stored scan. |
+| `scan_source` | `path` | Returns `ScanSource` for an image the user picked: real pixel size and a PNG data URL preview. Used by the crop editor before importing. |
+| `import_scan_crop` | `id`, `path`, `x`, `y`, `width`, `height` | Imports the integer crop of the picked image, rescaled to the preset's exact gauge size, as the managed scan. Rejects crops outside the source image or smaller than 32x32. |
 | `open_scan_archive` | — | Opens the archived-scan folder in the OS file manager. |
 | `clear_scan_archive` | — | Empties the archived-scan folder. |
 
 Replacing a preset's scan archives the previous managed copy instead of deleting it:
 `<preset name> - <timestamp>.png` in `archived-scans/` under the app data dir. The
 archive is shared by all presets and survives preset removal.
+A preset may also be left without a scan on purpose: `remove_scan` archives the
+current copy and keeps the preset saved. Such a preset is incomplete — the UI
+marks it in the preset list, and processing rejects it with an explanatory error.
+
+#### Sample regions
+
+The sampler reads three rectangles per gauge patch: the engraved interior and the
+two background strips left and right of it. Those rectangles must be produced by a
+single source of truth in `src/calibration.rs` and exposed as:
+
+```text
+ScanGeometry = {
+  width: number, height: number,
+  patches: Array<{
+    level: number,                 // gauge grey level of the patch
+    engraved: Rect, left: Rect, right: Rect
+  }>
+}
+Rect = { x: number, y: number, width: number, height: number }
+ScanSource = { width: number, height: number, data_url: string }
+```
+
+`ScanGeometry` is expressed in gauge pixels, so the UI can draw the overlay on both
+the stored scan and the generated gauge at any display scale. `scan_source` returns
+the real pixel size of the picked file plus a bounded preview (long edge ≤ 1600 px)
+so the crop editor can map display coordinates to source pixels exactly.
+
+The crop editor moves by whole source pixels: arrow keys nudge the crop by 1 source
+pixel, and the overlay of `ScanGeometry` is drawn inside the crop rectangle at the
+scaled position so the user sees which pixels will be sampled.
 
 ### Engraving
 

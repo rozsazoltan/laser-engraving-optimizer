@@ -444,6 +444,20 @@ select {
   font-size: 11px;
 }
 
+.btn.icon {
+  width: 28px;
+  padding: 0;
+}
+
+.btn.icon svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+}
+
 .row-actions {
   display: flex;
   align-items: center;
@@ -660,6 +674,24 @@ select.input {
   max-width: 104px;
 }
 
+.watts-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.watts-field .watts-input {
+  flex: 0 1 104px;
+  max-width: 104px;
+}
+
+.watts-unit {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+
 .laser-list {
   list-style: none;
   margin: 0;
@@ -809,6 +841,19 @@ select.input {
   background: var(--accent);
 }
 
+.preset-warn {
+  display: grid;
+  place-items: center;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #3a1c1d;
+  color: #e08a8a;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .empty-side {
   display: flex;
   flex-direction: column;
@@ -851,6 +896,14 @@ select.input {
   display: flex;
   flex-direction: column;
   gap: 7px;
+}
+
+.scan-slot-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  min-height: 28px;
 }
 
 .scan-preview-slot img,
@@ -1222,43 +1275,212 @@ select.input {
   background: var(--accent);
 }
 
+/* Autark's sheen: grey wordmark with a whitish highlight sweeping across it. */
 .splash-word {
-  font-size: 19px;
+  font-size: 20px;
   font-weight: 600;
-  letter-spacing: -0.03em;
-  color: var(--text);
+  letter-spacing: -0.025em;
+  color: var(--muted);
+  background-image: linear-gradient(
+    100deg,
+    var(--muted) 0%,
+    var(--muted) 42%,
+    #f5f5f5 50%,
+    var(--muted) 58%,
+    var(--muted) 100%
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: splash-sheen 2.6s ease-in-out infinite;
+}
+
+@keyframes splash-sheen {
+  0% {
+    background-position: 0% 0;
+  }
+  28.6% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: 100% 0;
+  }
 }
 
 .splash-msg {
-  font-size: 12px;
+  font-family: var(--mono);
+  font-size: 11px;
   color: var(--muted);
 }
 
+/* Determinate loading bar: a gold fill growing from 0 to 100 percent. */
 .splash-bar {
   position: relative;
-  width: 200px;
+  width: 120px;
   height: 2px;
-  margin-top: 5px;
+  margin-top: 6px;
   overflow: hidden;
-  background: #1b1b1b;
+  background: #282828;
 }
 
-.splash-bar::after {
-  content: "";
+.splash-fill {
+  display: block;
+  height: 100%;
+  background: #d0aa61;
+  transition: width 0.12s linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .splash-word {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: currentColor;
+  }
+
+  .splash-fill {
+    transition: none;
+  }
+}
+
+.sample-image {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+}
+
+.sample-image > img,
+.crop-canvas > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+
+.sample-overlay {
   position: absolute;
-  inset: 0 auto 0 0;
-  width: 40%;
-  background: var(--accent);
-  animation: sweep 1.15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
 }
 
-@keyframes sweep {
-  from {
-    transform: translateX(-100%);
-  }
-  to {
-    transform: translateX(350%);
-  }
+.sample-engraved {
+  fill: color-mix(in srgb, var(--accent) 24%, transparent);
+  stroke: color-mix(in srgb, var(--accent) 68%, transparent);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.sample-strip {
+  fill: color-mix(in srgb, var(--warn) 24%, transparent);
+  stroke: color-mix(in srgb, var(--warn) 54%, transparent);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.sample-legend {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sample-swatch {
+  width: 10px;
+  height: 10px;
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  border: 1px solid var(--accent);
+}
+
+.scan-crop-editor {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 12px;
+  background: var(--card);
+}
+
+.crop-toolbar,
+.crop-fields {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.crop-viewport {
+  max-height: 400px;
+  overflow: auto;
+  background: #050505;
+  outline: none;
+}
+
+.crop-viewport:focus-visible {
+  box-shadow: 0 0 0 1px var(--focus);
+}
+
+.crop-canvas {
+  position: relative;
+  margin: 0 auto;
+}
+
+.crop-canvas > img {
+  position: absolute;
+  inset: 0;
+  user-select: none;
+}
+
+.crop-window {
+  position: absolute;
+  box-sizing: border-box;
+  overflow: visible;
+  outline: 1px solid var(--accent);
+  touch-action: none;
+  cursor: move;
+}
+
+.crop-window > .sample-overlay {
+  overflow: hidden;
+}
+
+.crop-handle {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  z-index: 2;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 1px solid var(--text);
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+.crop-fields > label {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.crop-fields input {
+  width: 84px;
+}
+
+.crop-size {
+  margin: 0;
+}
+
+.crop-zoom {
+  min-width: 42px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .splash-error {

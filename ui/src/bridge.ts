@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { mockCall } from "./mock";
-import type { Preset, PresetPreview, ProcessResult, State } from "./types";
+import type { Preset, PresetPreview, ProcessResult, ScanGeometry, ScanSource, State } from "./types";
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -32,8 +32,13 @@ export const bridge = {
   savePreset: (preset: Preset) => call<State>("save_preset", { preset }),
   removePreset: (id: string) => call<State>("remove_preset", { id }),
   importScan: (id: string, path: string) => call<State>("import_scan", { id, path }),
+  removeScan: (id: string) => call<State>("remove_scan", { id }),
   exportGauge: (id: string, path: string) => call<State>("export_gauge", { id, path }),
   presetPreview: (id: string) => call<PresetPreview>("preset_preview", { id }),
+  scanGeometry: (id: string) => call<ScanGeometry>("scan_geometry", { id }),
+  scanSource: (path: string) => call<ScanSource>("scan_source", { path }),
+  importScanCrop: (id: string, path: string, x: number, y: number, width: number, height: number) =>
+    call<State>("import_scan_crop", { id, path, x, y, width, height }),
   openScanArchive: () => call<State>("open_scan_archive"),
   clearScanArchive: () => call<State>("clear_scan_archive"),
 

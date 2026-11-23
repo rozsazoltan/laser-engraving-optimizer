@@ -49,6 +49,32 @@ impl GridCalibrationSpecification {
                 .ok_or("Gauge dimensions overflow")?,
         ))
     }
+    pub fn sample_regions(&self) -> Result<Vec<SampleRegion>, String> {
+        let mut regions = Vec::new();
+        for area in self.colored_areas()? {
+            let width = area.x1 - area.x0;
+            let height = area.y1 - area.y0;
+            let inset = ((width as f64 * 0.015).round_ties_even() as u32).max(1);
+            let end = ((width as f64 * 0.075).round_ties_even() as u32).max(inset + 1);
+            let py0 = area.y0 + (height as f64 * 0.20).round_ties_even() as u32;
+            let py1 = area.y1 - (height as f64 * 0.20).round_ties_even() as u32;
+            let px0 = area.x0 + (width as f64 * 0.15).round_ties_even() as u32;
+            let px1 = area.x1 - (width as f64 * 0.15).round_ties_even() as u32;
+            let rect = |x0: u32, y0: u32, x1: u32, y1: u32| SampleRect {
+                x: x0 as i64,
+                y: y0 as i64,
+                width: (x1 - x0) as i64,
+                height: (y1 - y0) as i64,
+            };
+            regions.push(SampleRegion {
+                level: area.level,
+                engraved: rect(px0, py0, px1, py1),
+                left: rect(area.x0 - end, py0, area.x0 - inset, py1),
+                right: rect(area.x1 + inset, py0, area.x1 + end, py1),
+            });
+        }
+        Ok(regions)
+    }
     pub fn generate(&self) -> Result<GrayImage, String> {
         self.validate()?;
         let (w, h) = self.dimensions()?;
@@ -110,6 +136,22 @@ impl GridCalibrationSpecification {
         }
         Ok(areas)
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct SampleRect {
+    pub x: i64,
+    pub y: i64,
+    pub width: i64,
+    pub height: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SampleRegion {
+    pub level: u8,
+    pub engraved: SampleRect,
+    pub left: SampleRect,
+    pub right: SampleRect,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -223,16 +265,8 @@ impl Calibration {
             ])
         });
         let mut samples = Vec::new();
-        for a in spec.colored_areas()? {
-            let width = a.x1 - a.x0;
-            let height = a.y1 - a.y0;
-            let inset = ((width as f64 * 0.015).round_ties_even() as u32).max(1);
-            let end = ((width as f64 * 0.075).round_ties_even() as u32).max(inset + 1);
-            let py0 = a.y0 + (height as f64 * 0.20).round_ties_even() as u32;
-            let py1 = a.y1 - (height as f64 * 0.20).round_ties_even() as u32;
-            let px0 = a.x0 + (width as f64 * 0.15).round_ties_even() as u32;
-            let px1 = a.x1 - (width as f64 * 0.15).round_ties_even() as u32;
-            let region = |x0: u32, y0: u32, x1: u32, y1: u32| -> Result<f64, String> {
+        for sample in spec.sample_regions()? {
+            let sample_rect = |x0: u32, y0: u32, x1: u32, y1: u32| -> Result<f64, String> {
                 let mut v = Vec::new();
                 for y in y0..y1 {
                     for x in x0..x1 {
@@ -241,12 +275,36 @@ impl Calibration {
                 }
                 median(v)
             };
-            let engr = region(px0, py0, px1, py1)?;
-            let left = region(a.x0 - end, py0, a.x0 - inset, py1)?;
-            let right = region(a.x1 + inset, py0, a.x1 + end, py1)?;
+            let to_bounds = |rect: SampleRect| -> Result<(u32, u32, u32, u32), String> {
+                let x0 =
+                    u32::try_from(rect.x).map_err(|_| "Calibration patch too small to sample")?;
+                let y0 =
+                    u32::try_from(rect.y).map_err(|_| "Calibration patch too small to sample")?;
+                let x1 = u32::try_from(rect.x + rect.width)
+                    .map_err(|_| "Calibration patch too small to sample")?;
+                let y1 = u32::try_from(rect.y + rect.height)
+                    .map_err(|_| "Calibration patch too small to sample")?;
+                Ok((x0, y0, x1, y1))
+            };
+            let engraved_bounds = to_bounds(sample.engraved)?;
+            let engr = sample_rect(
+                engraved_bounds.0,
+                engraved_bounds.1,
+                engraved_bounds.2,
+                engraved_bounds.3,
+            )?;
+            let left_bounds = to_bounds(sample.left)?;
+            let left = sample_rect(left_bounds.0, left_bounds.1, left_bounds.2, left_bounds.3)?;
+            let right_bounds = to_bounds(sample.right)?;
+            let right = sample_rect(
+                right_bounds.0,
+                right_bounds.1,
+                right_bounds.2,
+                right_bounds.3,
+            )?;
             let bg = (left + right) / 2.0;
             samples.push(CalibrationSample {
-                input_lightness: a.level,
+                input_lightness: sample.level,
                 background_lightness: bg,
                 engraved_lightness: engr,
                 measured_darkness: (bg - engr).max(0.0),
@@ -363,6 +421,55 @@ mod tests {
         let areas = spec.colored_areas().unwrap();
         assert_eq!(areas.len(), 35);
         assert!(areas.windows(2).all(|pair| pair[0].level >= pair[1].level));
+    }
+
+    #[test]
+    fn sample_regions_match_gauge_patches_and_are_inside_their_bounds() {
+        let spec = GridCalibrationSpecification::default();
+        let areas = spec.colored_areas().unwrap();
+        let regions = spec.sample_regions().unwrap();
+        assert_eq!(regions.len(), 35);
+        assert!(regions.windows(2).all(|pair| pair[0].level > pair[1].level));
+        for (index, (area, sample)) in areas.iter().zip(&regions).enumerate() {
+            let patch_index = index as u32 + 1;
+            let col = patch_index % spec.columns;
+            let row = patch_index / spec.columns;
+            let patch_x0 = (col * spec.block_size) as i64;
+            let patch_y0 = (row * spec.block_size) as i64;
+            let patch_x1 = patch_x0 + spec.block_size as i64;
+            let patch_y1 = patch_y0 + spec.block_size as i64;
+            let in_cell = |rect: SampleRect| {
+                rect.width > 0
+                    && rect.height > 0
+                    && rect.x >= patch_x0
+                    && rect.y >= patch_y0
+                    && rect.x + rect.width <= patch_x1
+                    && rect.y + rect.height <= patch_y1
+            };
+            assert!(in_cell(sample.engraved));
+            assert!(in_cell(sample.left));
+            assert!(in_cell(sample.right));
+            assert!(sample.engraved.x >= area.x0 as i64);
+            assert!(sample.engraved.y >= area.y0 as i64);
+            assert!(sample.engraved.x + sample.engraved.width <= area.x1 as i64);
+            assert!(sample.engraved.y + sample.engraved.height <= area.y1 as i64);
+            assert!(sample.engraved.x > area.x0 as i64);
+            assert!(sample.engraved.x + sample.engraved.width < area.x1 as i64);
+            assert!(sample.left.x + sample.left.width < area.x0 as i64);
+            assert!(sample.right.x > area.x1 as i64);
+        }
+    }
+
+    #[test]
+    fn sample_regions_reject_invalid_spec_like_validate() {
+        let spec = GridCalibrationSpecification {
+            block_size: 31,
+            ..GridCalibrationSpecification::default()
+        };
+        assert_eq!(
+            spec.sample_regions().unwrap_err(),
+            spec.validate().unwrap_err()
+        );
     }
 
     #[test]

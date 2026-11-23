@@ -1,4 +1,4 @@
-import { DEFAULT_CALIBRATION, DEFAULT_PROCESSING, presetKey, type Laser, type Preset, type PresetPreview, type ProcessResult, type State } from "./types";
+import { DEFAULT_CALIBRATION, DEFAULT_PROCESSING, presetKey, type Laser, type Preset, type PresetPreview, type ProcessResult, type ScanGeometry, type ScanSource, type State } from "./types";
 
 /**
  * Browser-only stand-in for the Tauri host, used by `pnpm dev` so the UI can be
@@ -152,6 +152,41 @@ const previewImage = (label: string, width: number, height: number) => {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 };
 
+const scanGeometry = (match: Preset): ScanGeometry => {
+  const block = match.calibration.block_size;
+  const width = block * match.calibration.columns;
+  const height = block * match.calibration.rows;
+  const count = match.calibration.rows * match.calibration.columns - 1;
+  const spacing = block * 0.1;
+  const safety = (block - spacing) * 0.3;
+  const patches = Array.from({ length: count + 1 }, (_, index) => {
+    const n = index;
+    const col = n % match.calibration.columns;
+    const row = Math.floor(n / match.calibration.columns);
+    const factor = n === 0 ? 0 : (n / count) ** match.calibration.exponent;
+    const x0 = Math.ceil(col * block + spacing);
+    const y0 = Math.ceil(row * block + spacing + safety * factor);
+    const x1 = Math.ceil((col + 1) * block - spacing);
+    const y1 = Math.ceil((row + 1) * block - spacing);
+    const inset = Math.max(1, Math.round((x1 - x0) * 0.015));
+    const end = Math.max(inset + 1, Math.round((x1 - x0) * 0.075));
+    const px0 = x0 + Math.round((x1 - x0) * 0.15);
+    const px1 = x1 - Math.round((x1 - x0) * 0.15);
+    const py0 = y0 + Math.round((y1 - y0) * 0.2);
+    const py1 = y1 - Math.round((y1 - y0) * 0.2);
+    const rect = (left: number, top: number, right: number, bottom: number) => ({
+      x: left, y: top, width: right - left, height: bottom - top,
+    });
+    return {
+      level: Math.round(255 - factor * 255),
+      engraved: rect(px0, py0, px1, py1),
+      left: rect(x0 - end, py0, x0 - inset, py1),
+      right: rect(x1 + inset, py0, x1 + end, py1),
+    };
+  });
+  return { width, height, patches };
+};
+
 const firstPresetOf = (laserId: string | null) =>
   presets.find((item) => item.laser_id === laserId)?.id ?? null;
 
@@ -283,6 +318,48 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
       presets = presets.map((item) => (item.id === id ? { ...item, has_scan: true } : item));
       cache.clear();
       status = `Calibration scan imported for “${match.name}”`;
+      error = null;
+      return snapshot() as T;
+    }
+
+    case "scan_geometry":
+      return scanGeometry(presetOf(String(args?.id ?? ""))) as T;
+
+    case "scan_source": {
+      const path = String(args?.path ?? "");
+      if (!SCAN_EXTENSIONS.includes(extensionOf(path))) throw "Calibration scan must be a PNG or JPEG image.";
+      const source: ScanSource = { width: 1600, height: 1200, data_url: previewImage("Source scan", 1600, 1200) };
+      return source as T;
+    }
+
+    case "import_scan_crop": {
+      const id = String(args?.id ?? "");
+      const match = presetOf(id);
+      const path = String(args?.path ?? "");
+      const sourceWidth = 1600;
+      const sourceHeight = 1200;
+      const x = Number(args?.x);
+      const y = Number(args?.y);
+      const width = Number(args?.width);
+      const height = Number(args?.height);
+      if (!SCAN_EXTENSIONS.includes(extensionOf(path))) throw "Calibration scan must be a PNG or JPEG image.";
+      if (![x, y, width, height].every(Number.isInteger) || x < 0 || y < 0 || width < 32 || height < 32 || x + width > sourceWidth || y + height > sourceHeight) {
+        throw "The crop is outside the source image or smaller than 32 × 32 px.";
+      }
+      presets = presets.map((item) => item.id === id ? { ...item, has_scan: true } : item);
+      cache.clear();
+      status = `Calibration scan imported for “${match.name}”`;
+      error = null;
+      return snapshot() as T;
+    }
+
+    case "remove_scan": {
+      const id = String(args?.id ?? "");
+      const match = presetOf(id);
+      if (!match.has_scan) throw "This preset has no calibration scan.";
+      presets = presets.map((item) => (item.id === id ? { ...item, has_scan: false } : item));
+      cache.clear();
+      status = `Calibration scan of “${match.name}” moved to the archive`;
       error = null;
       return snapshot() as T;
     }

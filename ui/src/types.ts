@@ -37,6 +37,11 @@ export type PresetPreview = {
   height: number;
 };
 
+export type ScanRect = { x: number; y: number; width: number; height: number };
+export type ScanPatch = { level: number; engraved: ScanRect; left: ScanRect; right: ScanRect };
+export type ScanGeometry = { width: number; height: number; patches: ScanPatch[] };
+export type ScanSource = { width: number; height: number; data_url: string };
+
 export type State = {
   lasers: Laser[];
   presets: Preset[];

@@ -1,6 +1,7 @@
 import { For, Show, createSignal } from "solid-js";
-import { COLOR_METHODS, formatPower, laserLabel, powerWatts, type CalibrationSpec, type ColorMethod, type Draft, type Laser, type Preset, type PresetPreview, type ProcessingSettings } from "./types";
+import { COLOR_METHODS, formatPower, laserLabel, powerWatts, type CalibrationSpec, type ColorMethod, type Draft, type Laser, type Preset, type PresetPreview, type ProcessingSettings, type ScanGeometry, type ScanSource } from "./types";
 import { Field, NumberField } from "./fields";
+import { SampleOverlay, ScanCropEditor, type Crop } from "./scancrop";
 
 type Props = {
   lasers: Laser[];
@@ -13,6 +14,8 @@ type Props = {
   working: string | null;
   preview: PresetPreview | null;
   previewLoading: boolean;
+  geometry: ScanGeometry | null;
+  cropSource: ScanSource | null;
   onScope: (laserId: string) => void;
   onSelect: (id: string) => void;
   onAdd: () => void;
@@ -23,11 +26,25 @@ type Props = {
   onRevert: () => void;
   onRemove: () => void;
   onImportScan: () => void;
+  onCropImport: (crop: Crop) => void;
+  onCropCancel: () => void;
+  onRemoveScan: () => void;
   onExportGauge: () => void;
   onOpenArchive: () => void;
   onClearArchive: () => void;
   onOpenLasers: () => void;
 };
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M2.6 4.4h10.8" />
+      <path d="M6.2 4.4V2.9h3.6v1.5" />
+      <path d="M4.1 4.4l.7 8.1a1.1 1.1 0 0 0 1.1 1h4.2a1.1 1.1 0 0 0 1.1-1l.7-8.1" />
+      <path d="M6.7 7v4M9.3 7v4" />
+    </svg>
+  );
+}
 
 export function PresetsArea(props: Props) {
   const [confirmClear, setConfirmClear] = createSignal(false);
@@ -111,6 +128,11 @@ export function PresetsArea(props: Props) {
                   >
                     <span class="preset-name">{item.name}</span>
                     <span class="preset-meta">
+                      <Show when={!item.has_scan}>
+                        <span class="preset-warn" title="No calibration scan" aria-label="Incomplete preset">
+                          !
+                        </span>
+                      </Show>
                       {item.has_scan ? "scan ready" : "no scan"}
                       <Show when={props.dirty && item.id === props.preset?.id}>
                         <span class="preset-dirty" aria-label="unsaved changes" />
@@ -285,8 +307,8 @@ export function PresetsArea(props: Props) {
                     </span>
                   </div>
                   <div class="row-actions">
-                    <button type="button" class="btn" disabled={props.busy} onClick={props.onImportScan}>
-                      {props.working === "import" ? "Importing…" : "Import calibration scan…"}
+                    <button type="button" class="btn" disabled={props.busy || !!props.cropSource} onClick={props.onImportScan}>
+                      {props.working === "scan-source" ? "Loading scan…" : "Import calibration scan…"}
                     </button>
                     <button type="button" class="btn" disabled={props.busy} onClick={props.onExportGauge}>
                       {props.working === "gauge" ? "Exporting…" : "Export gauge PNG…"}
@@ -304,22 +326,54 @@ export function PresetsArea(props: Props) {
                   </Show>
                   <div class="scan-previews" aria-live="polite">
                     <div class="scan-preview-slot">
-                      <span class="field-label">Calibration scan</span>
+                      <div class="scan-slot-head">
+                        <span class="field-label">Calibration scan</span>
+                        <button
+                          type="button"
+                          class="btn icon"
+                          title="Move scan to the archive"
+                          aria-label="Move scan to the archive"
+                          disabled={props.busy || !current().has_scan}
+                          onClick={props.onRemoveScan}
+                        >
+                          <TrashIcon />
+                        </button>
+                      </div>
                       <Show when={props.preview?.scan_data_url} fallback={<div class="scan-placeholder" style={{ "aspect-ratio": `${gaugeWidth()} / ${gaugeHeight()}` }}>No calibration scan yet</div>}>
-                        {(src) => <img style={{ "aspect-ratio": `${gaugeWidth()} / ${gaugeHeight()}` }} src={src()} alt="Calibration scan preview" />}
+                        {(src) => <div class="sample-image" style={{ "aspect-ratio": `${gaugeWidth()} / ${gaugeHeight()}` }}>
+                          <img src={src()} alt="Calibration scan preview" />
+                          <Show when={props.geometry}>{(geometry) => <SampleOverlay geometry={geometry()} />}</Show>
+                        </div>}
                       </Show>
                     </div>
                     <div class="scan-preview-slot">
                       <span class="field-label">Sample gauge</span>
                       <Show when={props.preview} fallback={<div class="scan-placeholder" style={{ "aspect-ratio": `${gaugeWidth()} / ${gaugeHeight()}` }}>{props.previewLoading ? "Loading preview…" : "Preview unavailable"}</div>}>
-                        {(preview) => <img style={{ "aspect-ratio": `${preview().width} / ${preview().height}` }} src={preview().gauge_data_url} alt="Sample gauge preview" />}
+                        {(preview) => <div class="sample-image" style={{ "aspect-ratio": `${preview().width} / ${preview().height}` }}>
+                          <img src={preview().gauge_data_url} alt="Sample gauge preview" />
+                          <Show when={props.geometry}>{(geometry) => <SampleOverlay geometry={geometry()} />}</Show>
+                        </div>}
                       </Show>
                     </div>
                   </div>
                   <p class="hint mono preview-size">{props.preview ? `${props.preview.width} × ${props.preview.height} px` : `${gaugeWidth()} × ${gaugeHeight()} px`}{props.previewLoading ? " · Updating preview…" : ""}</p>
+                  <p class="sample-legend"><span class="sample-swatch" /> Sampled pixels</p>
+                  <Show when={props.cropSource && props.geometry}>
+                    <ScanCropEditor
+                      source={props.cropSource!}
+                      geometry={props.geometry!}
+                      targetWidth={current().calibration.block_size * current().calibration.columns}
+                      targetHeight={current().calibration.block_size * current().calibration.rows}
+                      busy={props.busy}
+                      onImport={props.onCropImport}
+                      onCancel={props.onCropCancel}
+                    />
+                  </Show>
                   <div class="row-actions">
                     <button type="button" class="btn" disabled={props.busy} onClick={props.onOpenArchive}>Open archive</button>
-                    <button type="button" class="btn" disabled={props.busy} onClick={() => setConfirmClear(true)}>Empty archive</button>
+                    <button type="button" class="btn icon" title="Empty the scan archive" aria-label="Empty the scan archive" disabled={props.busy} onClick={() => setConfirmClear(true)}>
+                      <TrashIcon />
+                    </button>
                   </div>
                   <Show when={confirmClear()}>
                     <div class="archive-confirm" role="alert">

@@ -14,7 +14,7 @@ use image::{GrayImage, RgbImage};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
-use crate::calibration::{Calibration, GridCalibrationSpecification};
+use crate::calibration::{Calibration, GridCalibrationSpecification, SampleRect};
 use crate::presets::{Preset, PresetStore};
 use crate::processing::{self, ColorMethod, ProcessingSettings};
 
@@ -157,6 +157,7 @@ struct Inner {
     status: String,
     error: Option<String>,
     cache: HashMap<String, ProcessCache>,
+    previews: HashMap<String, PresetPreview>,
 }
 
 pub struct Host {
@@ -215,6 +216,7 @@ impl Host {
                 status: "Ready".to_string(),
                 error: None,
                 cache: HashMap::new(),
+                previews: HashMap::new(),
             }),
         })
     }
@@ -256,14 +258,85 @@ fn save_png(image: &GrayImage, path: &Path) -> Result<(), String> {
 }
 
 fn preview_image(image: &GrayImage) -> GrayImage {
+    preview_image_with_edge(image, PREVIEW_EDGE)
+}
+
+fn preview_image_with_edge(image: &GrayImage, edge: u32) -> GrayImage {
     let longest = image.width().max(image.height());
-    if longest <= PREVIEW_EDGE {
+    if longest <= edge {
         return image.clone();
     }
-    let scale = PREVIEW_EDGE as f64 / longest as f64;
+    let scale = edge as f64 / longest as f64;
     let width = ((image.width() as f64 * scale).round() as u32).max(1);
     let height = ((image.height() as f64 * scale).round() as u32).max(1);
     image::imageops::resize(image, width, height, image::imageops::FilterType::Triangle)
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ScanPatch {
+    pub level: u8,
+    pub engraved: SampleRect,
+    pub left: SampleRect,
+    pub right: SampleRect,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ScanGeometry {
+    pub width: u32,
+    pub height: u32,
+    pub patches: Vec<ScanPatch>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ScanSource {
+    pub width: u32,
+    pub height: u32,
+    pub data_url: String,
+}
+
+#[tauri::command]
+pub async fn scan_geometry(host: State<'_, Host>, id: String) -> Result<ScanGeometry, String> {
+    let inner = host.lock();
+    let preset = inner
+        .store
+        .presets()
+        .iter()
+        .find(|preset| preset.id == id)
+        .ok_or_else(|| "Preset not found.".to_string())?;
+    build_scan_geometry(&preset.calibration)
+}
+
+fn build_scan_geometry(spec: &GridCalibrationSpecification) -> Result<ScanGeometry, String> {
+    let (width, height) = spec.dimensions()?;
+    let patches = spec
+        .sample_regions()?
+        .into_iter()
+        .map(|region| ScanPatch {
+            level: region.level,
+            engraved: region.engraved,
+            left: region.left,
+            right: region.right,
+        })
+        .collect();
+    Ok(ScanGeometry {
+        width,
+        height,
+        patches,
+    })
+}
+
+#[tauri::command]
+pub async fn scan_source(host: State<'_, Host>, path: String) -> Result<ScanSource, String> {
+    let _inner = host.lock();
+    let source = processing::load_rgb(Path::new(&path))?;
+    let (width, height) = source.dimensions();
+    let preview = image::DynamicImage::ImageRgb8(source).to_luma8();
+    let data_url = data_url(&preview_image_with_edge(&preview, 1600))?;
+    Ok(ScanSource {
+        width,
+        height,
+        data_url,
+    })
 }
 
 fn data_url(image: &GrayImage) -> Result<String, String> {
@@ -277,12 +350,14 @@ fn data_url(image: &GrayImage) -> Result<String, String> {
     Ok(format!("data:image/png;base64,{}", BASE64.encode(&buffer)))
 }
 
-fn build_preset_preview(store: &PresetStore, preset: &Preset) -> Result<PresetPreview, String> {
-    let gauge = preset.calibration.generate()?;
+fn build_preset_preview(
+    spec: &GridCalibrationSpecification,
+    scan_path: Option<PathBuf>,
+) -> Result<PresetPreview, String> {
+    let gauge = spec.generate()?;
     let (width, height) = (gauge.width(), gauge.height());
     // A missing or corrupt scan only hides the scan; the gauge still serves.
-    let scan_data_url = store
-        .scan_path(preset)
+    let scan_data_url = scan_path
         .and_then(|path| processing::load_rgb(&path).ok())
         .and_then(|scan| {
             let gray = image::DynamicImage::ImageRgb8(scan).to_luma8();
@@ -311,10 +386,9 @@ fn selected_scan(
         .store
         .selected()
         .ok_or_else(|| "Select a preset first.".to_string())?;
-    let scan = inner
-        .store
-        .calibration_photo_path(preset)
-        .ok_or_else(|| "This preset has no calibration scan yet.".to_string())?;
+    let scan = inner.store.calibration_photo_path(preset).ok_or_else(|| {
+        "This preset is incomplete: import a calibration scan before processing.".to_string()
+    })?;
     Ok((
         preset.id.clone(),
         preset.calibration.clone(),
@@ -339,6 +413,66 @@ fn load_calibration(
     Calibration::from_scan(spec, &image)
 }
 
+fn import_crop_to_store(
+    store: &mut PresetStore,
+    id: &str,
+    path: &Path,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+) -> Result<(), String> {
+    let preset = store
+        .presets()
+        .iter()
+        .find(|preset| preset.id == id)
+        .ok_or_else(|| "Preset not found.".to_string())?;
+    if width < 32 || height < 32 {
+        return Err("Crop must be at least 32x32 pixels.".into());
+    }
+    let source = processing::load_rgb(path)?;
+    let (source_width, source_height) = source.dimensions();
+    if x < 0
+        || y < 0
+        || x.checked_add(width)
+            .is_none_or(|right| right > source_width as i64)
+        || y.checked_add(height)
+            .is_none_or(|bottom| bottom > source_height as i64)
+    {
+        return Err("Crop is outside the image.".into());
+    }
+    let crop = image::imageops::crop_imm(&source, x as u32, y as u32, width as u32, height as u32)
+        .to_image();
+    let (target_width, target_height) = preset.calibration.dimensions()?;
+    // Triangle resampling matches the preview path's interpolation quality.
+    let resized = image::imageops::resize(
+        &crop,
+        target_width,
+        target_height,
+        image::imageops::FilterType::Triangle,
+    );
+    let archive_dir = store.archive_dir();
+    let store_root = archive_dir
+        .parent()
+        .ok_or_else(|| "Could not locate preset store directory.".to_string())?;
+    let staging_dir = store_root.join("photos");
+    std::fs::create_dir_all(&staging_dir).map_err(|error| error.to_string())?;
+    let staging = staging_dir.join(format!(
+        ".crop-{}-{}.png",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    resized.save(&staging).map_err(|error| error.to_string())?;
+    let imported = store
+        .import_calibration_photo(id, &staging)
+        .map_err(|error| error.to_string());
+    let _ = std::fs::remove_file(staging);
+    imported
+}
+
 #[tauri::command]
 pub fn get_state(host: State<'_, Host>) -> UiState {
     build_state(&host.lock())
@@ -353,6 +487,7 @@ pub fn add_laser(host: State<'_, Host>, name: String, watts: f64) -> Result<UiSt
         return Err(host.fail(&mut inner, error.to_string()));
     }
     inner.cache.clear();
+    inner.previews.clear();
     inner.status = "Laser added".to_string();
     Ok(host.publish(&mut inner))
 }
@@ -383,6 +518,7 @@ pub fn remove_laser(host: State<'_, Host>, id: String) -> Result<UiState, String
         return Err(host.fail(&mut inner, error.to_string()));
     }
     inner.cache.clear();
+    inner.previews.clear();
     inner.status = "Laser removed".to_string();
     Ok(host.publish(&mut inner))
 }
@@ -396,6 +532,7 @@ pub fn select_laser(host: State<'_, Host>, id: String) -> Result<UiState, String
         return Err(host.fail(&mut inner, error.to_string()));
     }
     inner.cache.clear();
+    inner.previews.clear();
     inner.status = "Laser selected".to_string();
     Ok(host.publish(&mut inner))
 }
@@ -409,6 +546,7 @@ pub fn select_preset(host: State<'_, Host>, id: String) -> Result<UiState, Strin
         return Err(host.fail(&mut inner, error.to_string()));
     }
     inner.cache.clear();
+    inner.previews.clear();
     inner.status = "Preset selected".to_string();
     Ok(host.publish(&mut inner))
 }
@@ -426,6 +564,7 @@ pub fn add_preset(
         return Err(host.fail(&mut inner, error.to_string()));
     }
     inner.cache.clear();
+    inner.previews.clear();
     inner.status = "Preset added".to_string();
     Ok(host.publish(&mut inner))
 }
@@ -475,6 +614,7 @@ pub fn save_preset(host: State<'_, Host>, preset: UiPreset) -> Result<UiState, S
         return Err(host.fail(&mut inner, error.to_string()));
     }
     inner.cache.clear();
+    inner.previews.clear();
     inner.status = "Preset saved".to_string();
     Ok(host.publish(&mut inner))
 }
@@ -488,12 +628,17 @@ pub fn remove_preset(host: State<'_, Host>, id: String) -> Result<UiState, Strin
         return Err(host.fail(&mut inner, error.to_string()));
     }
     inner.cache.clear();
+    inner.previews.clear();
     inner.status = "Preset removed".to_string();
     Ok(host.publish(&mut inner))
 }
 
 #[tauri::command]
-pub fn import_scan(host: State<'_, Host>, id: String, path: String) -> Result<UiState, String> {
+pub async fn import_scan(
+    host: State<'_, Host>,
+    id: String,
+    path: String,
+) -> Result<UiState, String> {
     let mut inner = host.lock();
     guard_busy(&inner)?;
     inner.error = None;
@@ -501,12 +646,54 @@ pub fn import_scan(host: State<'_, Host>, id: String, path: String) -> Result<Ui
         return Err(host.fail(&mut inner, error.to_string()));
     }
     inner.cache.clear();
+    inner.previews.clear();
     inner.status = "Calibration scan imported".to_string();
     Ok(host.publish(&mut inner))
 }
 
 #[tauri::command]
-pub fn export_gauge(host: State<'_, Host>, id: String, path: String) -> Result<UiState, String> {
+pub async fn import_scan_crop(
+    host: State<'_, Host>,
+    id: String,
+    path: String,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+) -> Result<UiState, String> {
+    let mut inner = host.lock();
+    guard_busy(&inner)?;
+    inner.error = None;
+    let result = import_crop_to_store(&mut inner.store, &id, Path::new(&path), x, y, width, height);
+    if let Err(error) = result {
+        return Err(host.fail(&mut inner, error));
+    }
+    inner.cache.clear();
+    inner.previews.clear();
+    inner.status = "Calibration scan imported".to_string();
+    Ok(host.publish(&mut inner))
+}
+
+#[tauri::command]
+pub async fn remove_scan(host: State<'_, Host>, id: String) -> Result<UiState, String> {
+    let mut inner = host.lock();
+    guard_busy(&inner)?;
+    inner.error = None;
+    if let Err(error) = inner.store.detach_calibration_photo(&id) {
+        return Err(host.fail(&mut inner, error.to_string()));
+    }
+    inner.cache.clear();
+    inner.previews.clear();
+    inner.status = "Calibration scan moved to the archive".to_string();
+    Ok(host.publish(&mut inner))
+}
+
+#[tauri::command]
+pub async fn export_gauge(
+    host: State<'_, Host>,
+    id: String,
+    path: String,
+) -> Result<UiState, String> {
     let mut inner = host.lock();
     guard_busy(&inner)?;
     inner.error = None;
@@ -526,15 +713,27 @@ pub fn export_gauge(host: State<'_, Host>, id: String, path: String) -> Result<U
 }
 
 #[tauri::command]
-pub fn preset_preview(host: State<'_, Host>, id: String) -> Result<PresetPreview, String> {
-    let inner = host.lock();
-    let preset = inner
-        .store
-        .presets()
-        .iter()
-        .find(|preset| preset.id == id)
-        .ok_or_else(|| "Preset not found.".to_string())?;
-    build_preset_preview(&inner.store, preset)
+pub async fn preset_preview(host: State<'_, Host>, id: String) -> Result<PresetPreview, String> {
+    // Resolve inputs and check the cache under the lock, then compute without it: a page
+    // reload's get_state must never wait behind a gauge render.
+    let (spec, scan_path) = {
+        let inner = host.lock();
+        if let Some(cached) = inner.previews.get(&id) {
+            return Ok(cached.clone());
+        }
+        let preset = inner
+            .store
+            .presets()
+            .iter()
+            .find(|preset| preset.id == id)
+            .ok_or_else(|| "Preset not found.".to_string())?;
+        (preset.calibration.clone(), inner.store.scan_path(preset))
+    };
+    let preview = build_preset_preview(&spec, scan_path)?;
+    if let Ok(mut inner) = host.inner.lock() {
+        inner.previews.insert(id, preview.clone());
+    }
+    Ok(preview)
 }
 
 #[tauri::command]
@@ -575,7 +774,7 @@ pub fn clear_scan_archive(host: State<'_, Host>) -> Result<UiState, String> {
 }
 
 #[tauri::command]
-pub fn process_photo(
+pub async fn process_photo(
     window: tauri::WebviewWindow,
     host: State<'_, Host>,
     tab: String,
@@ -686,7 +885,7 @@ fn write_cached(
 }
 
 #[tauri::command]
-pub fn save_engraving(
+pub async fn save_engraving(
     window: tauri::WebviewWindow,
     host: State<'_, Host>,
     tab: String,
@@ -698,7 +897,7 @@ pub fn save_engraving(
 }
 
 #[tauri::command]
-pub fn save_simulation(
+pub async fn save_simulation(
     window: tauri::WebviewWindow,
     host: State<'_, Host>,
     tab: String,
@@ -710,7 +909,7 @@ pub fn save_simulation(
 }
 
 #[tauri::command]
-pub fn save_report(
+pub async fn save_report(
     window: tauri::WebviewWindow,
     host: State<'_, Host>,
     tab: String,
@@ -801,6 +1000,7 @@ pub fn init(app: &tauri::App) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::calibration::SampleRegion;
 
     fn temp_root() -> PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -829,10 +1029,87 @@ mod tests {
             .iter()
             .find(|preset| preset.id == id)
             .unwrap();
-        let preview = build_preset_preview(&store, preset).unwrap();
+        let preview = build_preset_preview(&preset.calibration, store.scan_path(preset)).unwrap();
         assert!(preview.scan_data_url.is_none());
         assert!(preview.gauge_data_url.starts_with("data:image/png;base64,"));
         assert_eq!((preview.width, preview.height), expected);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scan_geometry_exposes_sampler_rectangles() {
+        let spec = GridCalibrationSpecification::default();
+        let geometry = build_scan_geometry(&spec).unwrap();
+        let sample: SampleRegion = spec.sample_regions().unwrap()[0];
+        assert_eq!(
+            (geometry.width, geometry.height),
+            spec.dimensions().unwrap()
+        );
+        assert_eq!(geometry.patches[0].level, sample.level);
+        assert_eq!(geometry.patches[0].engraved, sample.engraved);
+        assert_eq!(geometry.patches[0].left, sample.left);
+        assert_eq!(geometry.patches[0].right, sample.right);
+    }
+
+    #[test]
+    fn crop_import_resizes_and_rejections_preserve_current_scan() {
+        let root = temp_root();
+        let mut store = PresetStore::open(&root).unwrap();
+        let laser_id = store.add_laser("Laser", 40.0).unwrap().id.clone();
+        let mut preset = Preset::new("Crop", &laser_id);
+        preset.calibration.block_size = 32;
+        preset.calibration.rows = 2;
+        preset.calibration.columns = 2;
+        let id = preset.id.clone();
+        store.add(preset).unwrap();
+
+        let gauge = store.presets()[0].calibration.generate().unwrap();
+        let source = RgbImage::from_fn(200, 160, |x, y| {
+            if (40..104).contains(&x) && (30..94).contains(&y) {
+                let pixel = gauge.get_pixel(x - 40, y - 30)[0];
+                image::Rgb([pixel, pixel, pixel])
+            } else {
+                image::Rgb([240, 240, 240])
+            }
+        });
+        let source_path = root.join("large-source.png");
+        source.save(&source_path).unwrap();
+        import_crop_to_store(&mut store, &id, &source_path, 40, 30, 64, 64).unwrap();
+        let preset = store
+            .presets()
+            .iter()
+            .find(|preset| preset.id == id)
+            .unwrap();
+        let managed = store.scan_path(preset).unwrap();
+        assert!(managed.exists());
+        assert_eq!(
+            processing::load_rgb(&managed).unwrap().dimensions(),
+            (64, 64)
+        );
+        let initial_json = std::fs::read(root.join("presets.json")).unwrap();
+        let initial_bytes = std::fs::read(&managed).unwrap();
+
+        assert_eq!(
+            import_crop_to_store(&mut store, &id, &source_path, 180, 150, 32, 32).unwrap_err(),
+            "Crop is outside the image."
+        );
+        assert_eq!(
+            import_crop_to_store(&mut store, &id, &source_path, 0, 0, 16, 16).unwrap_err(),
+            "Crop must be at least 32x32 pixels."
+        );
+        assert_eq!(
+            std::fs::read(root.join("presets.json")).unwrap(),
+            initial_json
+        );
+        let preset = store
+            .presets()
+            .iter()
+            .find(|preset| preset.id == id)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(store.scan_path(preset).unwrap()).unwrap(),
+            initial_bytes
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

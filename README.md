@@ -90,8 +90,19 @@ The Presets area shows the imported calibration scan next to the generated
 sample gauge at the same scale, so a wrong-size or badly cropped scan is visible
 before an image is processed. Replacing a scan moves the previous managed copy
 into `archived-scans` in the application data directory, named after the preset
-and the replacement time. **Open archive** reveals those files and **Empty
-archive** clears them.
+and the replacement time. The trash button on the scan preview archives the
+current scan and leaves the preset saved without one; such a preset is marked
+with a red `!` in the list and refuses to process until a new scan is imported.
+**Open archive** reveals those files and the trash button beside it clears them.
+
+Both previews draw the exact pixels the sampler reads: one box on the engraved
+interior of every patch and two thin strips for the local background on either
+side. Use it to judge whether the photo sits where the code expects it. Importing
+a scan opens a crop editor first: drag or resize the crop rectangle, zoom, type
+exact X/Y/W/H values, or nudge it with the arrow keys (one source pixel, `Shift`
+plus arrow for ten) while the same sampled pixels stay visible inside the crop.
+The crop is rescaled to the gauge size on import, so the result always matches the
+preset geometry.
 
 Presets and managed scans are stored in
 `%LOCALAPPDATA%\LaserEngravingOptimizer`. Back up that entire directory to retain

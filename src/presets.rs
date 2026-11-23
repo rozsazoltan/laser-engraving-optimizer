@@ -471,6 +471,39 @@ impl PresetStore {
         Ok(())
     }
 
+    /// Archives the preset's current scan and leaves the preset saved without
+    /// one. Processing such a preset then rejects it as incomplete.
+    pub fn detach_calibration_photo(&mut self, id: &str) -> Result<()> {
+        let preset = self
+            .store
+            .presets
+            .iter()
+            .find(|p| p.id == id)
+            .ok_or_else(|| PresetError::Invalid("preset does not exist".to_string()))?;
+        let old_photo = preset
+            .calibration_photo
+            .clone()
+            .ok_or_else(|| PresetError::Invalid("preset has no calibration scan".to_string()))?;
+        let preset_name = preset.name.clone();
+        self.store
+            .presets
+            .iter_mut()
+            .find(|p| p.id == id)
+            .unwrap()
+            .calibration_photo = None;
+        if let Err(e) = self.save() {
+            self.store
+                .presets
+                .iter_mut()
+                .find(|p| p.id == id)
+                .unwrap()
+                .calibration_photo = Some(old_photo);
+            return Err(e);
+        }
+        self.archive_managed_scan(&preset_name, &old_photo);
+        Ok(())
+    }
+
     pub fn calibration_photo_path(&self, preset: &Preset) -> Option<PathBuf> {
         let name = preset.calibration_photo.as_deref()?;
         safe_photo_name(name).then(|| self.root.join("photos").join(name))
@@ -1226,6 +1259,51 @@ mod tests {
         assert!(name.starts_with("K40 board - "), "{name}");
         assert!(name.ends_with(".png"), "{name}");
         assert_eq!(fs::read(&archived[0]).unwrap(), first_bytes);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn detaching_the_scan_archives_it_and_keeps_the_preset() {
+        let root = temp();
+        let mut db = PresetStore::open(&root).unwrap();
+        let laser_id = db.add_laser("Laser", 0.0).unwrap().id.clone();
+        let preset = valid_preset("Detached", &laser_id);
+        let id = preset.id.clone();
+        db.add(preset).unwrap();
+        assert!(db.detach_calibration_photo(&id).is_err());
+
+        let source = root.join("scan.png");
+        image::RgbImage::from_pixel(64, 64, image::Rgb([5, 6, 7]))
+            .save(&source)
+            .unwrap();
+        db.import_calibration_photo(&id, &source).unwrap();
+        let managed = db.calibration_photo_path(&db.presets()[0]).unwrap();
+        let bytes = fs::read(&managed).unwrap();
+
+        db.detach_calibration_photo(&id).unwrap();
+
+        let preset = db.presets().iter().find(|item| item.id == id).unwrap();
+        assert!(preset.calibration_photo.is_none());
+        assert!(!managed.exists());
+        let reopened = PresetStore::open(&root).unwrap();
+        let reloaded = reopened
+            .presets()
+            .iter()
+            .find(|item| item.id == id)
+            .unwrap();
+        assert!(reloaded.calibration_photo.is_none());
+        let archived: Vec<PathBuf> = fs::read_dir(db.archive_dir())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(archived.len(), 1);
+        let name = archived[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(name.starts_with("Detached - "), "{name}");
+        assert_eq!(fs::read(&archived[0]).unwrap(), bytes);
         fs::remove_dir_all(root).unwrap();
     }
 

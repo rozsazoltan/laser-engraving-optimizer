@@ -4,6 +4,7 @@ import { Chrome } from "./chrome";
 import { DocStrip, EngraveArea } from "./engrave";
 import { LasersArea } from "./lasers";
 import { PresetsArea } from "./presets";
+import type { Crop } from "./scancrop";
 import { Splash, type SplashPhase } from "./splash";
 import {
   draftOf,
@@ -16,10 +17,11 @@ import {
   type ProcessResult,
   type PresetPreview,
   type ProcessingSettings,
+  type ScanGeometry,
+  type ScanSource,
   type State,
 } from "./types";
 
-const SPLASH_MIN_MS = 420;
 const SPLASH_FADE_MS = 170;
 
 const PHOTO_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"];
@@ -34,6 +36,8 @@ const WORKING_LABEL: Record<string, string> = {
   "preset-remove": "Removing preset",
   "laser-remove": "Removing laser",
   import: "Importing scan",
+  "scan-source": "Loading scan",
+  "crop-import": "Importing cropped scan",
   gauge: "Exporting gauge",
   process: "Processing photo",
   "save-engraving": "Saving engraving",
@@ -119,6 +123,8 @@ export default function App() {
   const [bootError, setBootError] = createSignal("");
   const [previewCache, setPreviewCache] = createSignal<Record<string, PresetPreview>>({});
   const [previewLoading, setPreviewLoading] = createSignal(false);
+  const [geometryCache, setGeometryCache] = createSignal<Record<string, ScanGeometry>>({});
+  const [cropSession, setCropSession] = createSignal<{ id: string; path: string; source: ScanSource } | null>(null);
 
   let unlisten: (() => void) | null = null;
 
@@ -169,9 +175,21 @@ export default function App() {
     }
   }
 
+  async function refreshScanGeometry(id: string) {
+    try {
+      const geometry = await bridge.scanGeometry(id);
+      setGeometryCache((cache) => ({ ...cache, [id]: geometry }));
+    } catch {
+      // Geometry failure only hides the overlay.
+    }
+  }
+
   createEffect(() => {
     const id = selectedPreset()?.id;
-    if (id) void refreshPresetPreview(id);
+    if (id) {
+      void refreshPresetPreview(id);
+      void refreshScanGeometry(id);
+    }
   });
 
   const draftDirty = createMemo(() => {
@@ -265,10 +283,8 @@ export default function App() {
   async function start() {
     setPhase("loading");
     setBootError("");
-    const minimum = new Promise<void>((resolve) => setTimeout(resolve, SPLASH_MIN_MS));
     try {
       const next = await bridge.getState();
-      await minimum;
       adopt(next);
       if (tabs().length === 0) {
         const tab = createTab(next.selected_preset);
@@ -279,7 +295,6 @@ export default function App() {
       setPhase("leaving");
       setTimeout(() => setPhase("gone"), SPLASH_FADE_MS);
     } catch (error) {
-      await minimum;
       setBootError(errorText(error));
       setPhase("error");
     }
@@ -404,6 +419,7 @@ export default function App() {
       const saved = next.presets.find((item) => item.id === current.id);
       if (saved && JSON.stringify(saved.calibration) !== JSON.stringify(current.calibration)) {
         void refreshPresetPreview(saved.id);
+        void refreshScanGeometry(saved.id);
       }
     });
   }
@@ -455,11 +471,37 @@ export default function App() {
   function importScan() {
     const current = selectedPreset();
     if (!current) return;
-    void run("import", async () => {
+    void run("scan-source", async () => {
       const path = await bridge.pickOpenFile("Choose calibration scan", ["png", "jpg", "jpeg"]);
       if (!path) return;
-      adopt(await bridge.importScan(current.id, path), { keepDraft: true });
+      const source = await bridge.scanSource(path);
+      const geometry = geometryCache()[current.id] ?? await bridge.scanGeometry(current.id);
+      setGeometryCache((cache) => ({ ...cache, [current.id]: geometry }));
+      setCropSession({ id: current.id, path, source });
+    });
+  }
+
+  function importCroppedScan(crop: Crop) {
+    const session = cropSession();
+    if (!session) return;
+    void run("crop-import", async () => {
+      adopt(
+        await bridge.importScanCrop(session.id, session.path, crop.x, crop.y, crop.width, crop.height),
+        { keepDraft: true },
+      );
+      setCropSession(null);
+      void refreshPresetPreview(session.id);
+      void refreshScanGeometry(session.id);
+    });
+  }
+
+  function removeScan() {
+    const current = selectedPreset();
+    if (!current) return;
+    void run("scan-remove", async () => {
+      adopt(await bridge.removeScan(current.id), { keepDraft: true });
       void refreshPresetPreview(current.id);
+      void refreshScanGeometry(current.id);
     });
   }
 
@@ -669,6 +711,8 @@ export default function App() {
                     working={working()}
                     preview={selectedPreset() ? previewCache()[selectedPreset()!.id] ?? null : null}
                     previewLoading={previewLoading()}
+                    geometry={selectedPreset() ? geometryCache()[selectedPreset()!.id] ?? null : null}
+                    cropSource={cropSession()?.id === selectedPreset()?.id ? cropSession()!.source : null}
                     onScope={selectLaser}
                     onSelect={selectPreset}
                     onAdd={addPreset}
@@ -679,6 +723,9 @@ export default function App() {
                     onRevert={revertPreset}
                     onRemove={removePreset}
                     onImportScan={importScan}
+                    onCropImport={importCroppedScan}
+                    onCropCancel={() => setCropSession(null)}
+                    onRemoveScan={removeScan}
                     onExportGauge={exportGauge}
                     onOpenArchive={openScanArchive}
                     onClearArchive={clearScanArchive}

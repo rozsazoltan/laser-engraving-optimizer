@@ -71,7 +71,10 @@ export function LasersArea(props: Props) {
           value={name()}
           onInput={(event) => setName(event.currentTarget.value)}
         />
-        <input class="input watts-input" type="number" aria-label="Laser watts" min="0" max="1000" step="1" disabled={props.busy} value={watts()} onInput={(event) => setWatts(Number(event.currentTarget.value))} />
+        <span class="watts-field">
+          <input class="input watts-input" type="number" aria-label="Laser watts" min="0" max="1000" step="1" disabled={props.busy} value={watts()} onInput={(event) => setWatts(Number(event.currentTarget.value))} />
+          <span class="watts-unit">W</span>
+        </span>
         <button type="submit" class="btn" disabled={props.busy || !name().trim()}>
           Add laser
         </button>
@@ -132,7 +135,7 @@ export function LasersArea(props: Props) {
                   <input
                     class="input"
                     type="text"
-                    aria-label={`Rename ${laser.name}`}
+                    aria-label={`Rename ${laserLabel(laser)}`}
                     autocomplete="off"
                     spellcheck={false}
                     disabled={props.busy}
@@ -143,7 +146,10 @@ export function LasersArea(props: Props) {
                       if (event.key === "Escape") setEditingId(null);
                     }}
                   />
-                  <input class="input watts-input" type="number" aria-label={`Rename ${laser.name} watts`} min="0" max="1000" step="1" disabled={props.busy} value={editWatts()} onInput={(event) => setEditWatts(Number(event.currentTarget.value))} />
+                  <span class="watts-field">
+                    <input class="input watts-input" type="number" aria-label={`Rename ${laserLabel(laser)} watts`} min="0" max="1000" step="1" disabled={props.busy} value={editWatts()} onInput={(event) => setEditWatts(Number(event.currentTarget.value))} />
+                    <span class="watts-unit">W</span>
+                  </span>
                   <div class="row-actions">
                     <button
                       type="button"

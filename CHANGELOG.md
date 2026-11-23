@@ -31,6 +31,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Side-by-side calibration scan and sample gauge previews in the Presets area.
 - Archived calibration scans with readable names, plus open and empty archive
   commands.
+- Presets can archive their own scan from the preview; the preset stays saved
+  without a scan, is flagged in the list, and refuses to process until a new scan
+  is imported.
+- Sampled-pixel overlay on both calibration previews, and a crop editor on scan
+  import with drag, resize, zoom, exact numeric fields, and one-pixel arrow-key
+  nudging.
 - Creality Falcon2 Pro S 22W calibration instructions.
 
 ### Changed
@@ -40,6 +46,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   embeds the SolidJS build from `ui/dist`.
 - Calibration presets are bound to a laser, and the laser selection scopes which
   presets are visible.
+- Startup screen shows a grey `engraving` wordmark with Autark's whitish sheen
+  animation, a 0-100% readout, and a determinate gold loading bar.
 
 ### Removed
 - Python reference scripts, `requirements.txt`, and the Python toolchain pin;
@@ -52,3 +60,5 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - White-reference sample rectangle extending into engraved cells.
 - Unstable cubic polynomial fitting and non-monotonic power interpolation.
 - Loss of almost all test patches caused by an arbitrary brightness-difference threshold.
+- The window no longer freezes while a photo is processed, a calibration scan is
+  imported, or a result is saved; heavy commands run on the async runtime.
