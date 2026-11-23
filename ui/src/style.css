@@ -887,15 +887,18 @@ select.input {
 .scan-previews {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: auto auto;
   gap: 12px;
+  row-gap: 7px;
   margin-top: 14px;
 }
 
 .scan-preview-slot {
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
+  display: grid;
+  grid-row: span 2;
+  grid-template-rows: subgrid;
+  align-content: start;
 }
 
 .scan-slot-head {
@@ -906,13 +909,36 @@ select.input {
   min-height: 28px;
 }
 
-.scan-preview-slot img,
-.scan-placeholder {
+.scan-preview-frame {
+  position: relative;
+  display: inline-block;
+  align-self: flex-start;
+  width: auto;
+  max-width: 100%;
+  max-height: 220px;
+  line-height: 0;
+}
+
+.scan-preview-frame img {
   display: block;
   width: 100%;
-  aspect-ratio: var(--scan-ratio, 1);
-  object-fit: contain;
+  height: auto;
+  max-width: 100%;
   max-height: 220px;
+  object-fit: fill;
+}
+
+.scan-placeholder {
+  display: grid;
+  width: 100%;
+  aspect-ratio: var(--scan-ratio, 1);
+  max-height: 220px;
+  place-items: center;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  background: #111;
 }
 
 .scan-placeholder {
@@ -1343,13 +1369,6 @@ select.input {
   }
 }
 
-.sample-image {
-  position: relative;
-  overflow: hidden;
-  width: 100%;
-}
-
-.sample-image > img,
 .crop-canvas > img {
   display: block;
   width: 100%;
@@ -1481,6 +1500,43 @@ select.input {
   text-align: center;
   color: var(--muted);
   font-size: 11px;
+}
+
+.scan-editor-scrim {
+  position: fixed;
+  z-index: 20;
+  inset: 36px 0 28px;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 24px;
+  background: rgb(10 10 10 / 94%);
+}
+
+.scan-crop-editor {
+  width: min(900px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  padding: 20px;
+  background: var(--card);
+}
+
+.scan-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.scan-editor-head h2 {
+  margin: 5px 0 0;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.crop-viewport {
+  max-height: min(50vh, 400px);
 }
 
 .splash-error {

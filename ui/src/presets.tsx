@@ -16,6 +16,9 @@ type Props = {
   previewLoading: boolean;
   geometry: ScanGeometry | null;
   cropSource: ScanSource | null;
+  cropCanImport: boolean;
+  cropEditingSaved: boolean;
+  canEditScan: boolean;
   onScope: (laserId: string) => void;
   onSelect: (id: string) => void;
   onAdd: () => void;
@@ -26,6 +29,7 @@ type Props = {
   onRevert: () => void;
   onRemove: () => void;
   onImportScan: () => void;
+  onEditScan: () => void;
   onCropImport: (crop: Crop) => void;
   onCropCancel: () => void;
   onRemoveScan: () => void;
@@ -330,6 +334,14 @@ export function PresetsArea(props: Props) {
                         <span class="field-label">Calibration scan</span>
                         <button
                           type="button"
+                          class="btn small"
+                          disabled={props.busy || !props.canEditScan}
+                          onClick={props.onEditScan}
+                        >
+                          Edit scan…
+                        </button>
+                        <button
+                          type="button"
                           class="btn icon"
                           title="Move scan to the archive"
                           aria-label="Move scan to the archive"
@@ -340,16 +352,18 @@ export function PresetsArea(props: Props) {
                         </button>
                       </div>
                       <Show when={props.preview?.scan_data_url} fallback={<div class="scan-placeholder" style={{ "aspect-ratio": `${gaugeWidth()} / ${gaugeHeight()}` }}>No calibration scan yet</div>}>
-                        {(src) => <div class="sample-image" style={{ "aspect-ratio": `${gaugeWidth()} / ${gaugeHeight()}` }}>
+                        {(src) => <div class="scan-preview-frame" style={{ width: `min(100%, ${Math.round(220 * gaugeWidth() / gaugeHeight())}px)` }}>
                           <img src={src()} alt="Calibration scan preview" />
                           <Show when={props.geometry}>{(geometry) => <SampleOverlay geometry={geometry()} />}</Show>
                         </div>}
                       </Show>
                     </div>
                     <div class="scan-preview-slot">
-                      <span class="field-label">Sample gauge</span>
+                      <div class="scan-slot-head">
+                        <span class="field-label">Sample gauge</span>
+                      </div>
                       <Show when={props.preview} fallback={<div class="scan-placeholder" style={{ "aspect-ratio": `${gaugeWidth()} / ${gaugeHeight()}` }}>{props.previewLoading ? "Loading preview…" : "Preview unavailable"}</div>}>
-                        {(preview) => <div class="sample-image" style={{ "aspect-ratio": `${preview().width} / ${preview().height}` }}>
+                        {(preview) => <div class="scan-preview-frame" style={{ width: `min(100%, ${Math.round(220 * preview().width / preview().height)}px)` }}>
                           <img src={preview().gauge_data_url} alt="Sample gauge preview" />
                           <Show when={props.geometry}>{(geometry) => <SampleOverlay geometry={geometry()} />}</Show>
                         </div>}
@@ -358,17 +372,6 @@ export function PresetsArea(props: Props) {
                   </div>
                   <p class="hint mono preview-size">{props.preview ? `${props.preview.width} × ${props.preview.height} px` : `${gaugeWidth()} × ${gaugeHeight()} px`}{props.previewLoading ? " · Updating preview…" : ""}</p>
                   <p class="sample-legend"><span class="sample-swatch" /> Sampled pixels</p>
-                  <Show when={props.cropSource && props.geometry}>
-                    <ScanCropEditor
-                      source={props.cropSource!}
-                      geometry={props.geometry!}
-                      targetWidth={current().calibration.block_size * current().calibration.columns}
-                      targetHeight={current().calibration.block_size * current().calibration.rows}
-                      busy={props.busy}
-                      onImport={props.onCropImport}
-                      onCancel={props.onCropCancel}
-                    />
-                  </Show>
                   <div class="row-actions">
                     <button type="button" class="btn" disabled={props.busy} onClick={props.onOpenArchive}>Open archive</button>
                     <button type="button" class="btn icon" title="Empty the scan archive" aria-label="Empty the scan archive" disabled={props.busy} onClick={() => setConfirmClear(true)}>
@@ -388,6 +391,19 @@ export function PresetsArea(props: Props) {
           }}
         </Show>
       </div>
+      </Show>
+      <Show when={props.cropSource && props.geometry && props.preset}>
+        {(session) => <ScanCropEditor
+          source={props.cropSource!}
+          geometry={props.geometry!}
+          targetWidth={props.preset!.calibration.block_size * props.preset!.calibration.columns}
+          targetHeight={props.preset!.calibration.block_size * props.preset!.calibration.rows}
+          busy={props.busy}
+          canImport={props.cropCanImport}
+          editingSaved={props.cropEditingSaved}
+          onImport={props.onCropImport}
+          onCancel={props.onCropCancel}
+        />}
       </Show>
     </section>
   );

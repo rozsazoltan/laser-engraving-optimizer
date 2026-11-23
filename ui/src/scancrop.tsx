@@ -1,5 +1,5 @@
-import { For, createSignal } from "solid-js";
-import type { ScanGeometry, ScanRect, ScanSource } from "./types";
+import { For, createSignal, onCleanup, onMount } from "solid-js";
+import type { ScanGeometry, ScanSource } from "./types";
 
 type Crop = { x: number; y: number; width: number; height: number };
 
@@ -31,6 +31,8 @@ type Props = {
   targetWidth: number;
   targetHeight: number;
   busy: boolean;
+  canImport: boolean;
+  editingSaved: boolean;
   onImport: (crop: Crop) => void;
   onCancel: () => void;
 };
@@ -58,6 +60,11 @@ export function ScanCropEditor(props: Props) {
   const [crop, setCrop] = createSignal(initialCrop(props.source, ratio()));
   const [zoom, setZoom] = createSignal(1);
   const [drag, setDrag] = createSignal<{ mode: "move" | "resize"; px: number; py: number; crop: Crop } | null>(null);
+  const closeOnEscape = (event: KeyboardEvent) => {
+    if (event.key === "Escape" && !props.busy) props.onCancel();
+  };
+  onMount(() => window.addEventListener("keydown", closeOnEscape));
+  onCleanup(() => window.removeEventListener("keydown", closeOnEscape));
   const scale = () => Math.min(740 / props.source.width, 380 / props.source.height) * zoom();
   const displayWidth = () => props.source.width * scale();
   const displayHeight = () => props.source.height * scale();
@@ -140,7 +147,12 @@ export function ScanCropEditor(props: Props) {
     crop().y + crop().height <= props.source.height;
 
   return (
-    <section class="scan-crop-editor" aria-label="Crop calibration scan">
+    <div class="scan-editor-scrim">
+      <section class="scan-crop-editor" role="dialog" aria-modal="true" aria-label="Edit calibration scan">
+      <header class="scan-editor-head">
+        <div><span class="section-label">Calibration scan</span><h2>Edit crop</h2></div>
+        <button type="button" class="btn" disabled={props.busy} onClick={props.onCancel}>Cancel</button>
+      </header>
       <div class="crop-toolbar">
         <span class="section-label">Position crop · arrow keys move by 1 px, Shift + arrow by 10 px</span>
         <div class="row-actions">
@@ -181,11 +193,13 @@ export function ScanCropEditor(props: Props) {
         <label><span class="field-label">H (px)</span><input class="input mono" type="number" min="32" max={props.source.height} step="1" disabled={props.busy} value={crop().height} onInput={(event) => setDimension("height", Number(event.currentTarget.value))} /></label>
       </div>
       <p class="hint mono crop-size">{crop().width} × {crop().height} → {props.targetWidth} × {props.targetHeight} px</p>
+      {!props.canImport && <p class="hint warn">This saved scan can be previewed, but saving its crop needs host support.</p>}
       <div class="row-actions">
-        <button type="button" class="btn primary" disabled={props.busy || !valid()} onClick={() => props.onImport(crop())}>{props.busy ? "Importing…" : "Import"}</button>
+        <button type="button" class="btn primary" disabled={props.busy || !valid() || !props.canImport} onClick={() => props.onImport(crop())}>{props.busy ? (props.editingSaved ? "Saving…" : "Importing…") : (props.editingSaved ? "Save" : "Import")}</button>
         <button type="button" class="btn" disabled={props.busy} onClick={props.onCancel}>Cancel</button>
       </div>
-    </section>
+      </section>
+    </div>
   );
 }
 

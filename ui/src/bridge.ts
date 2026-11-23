@@ -37,8 +37,11 @@ export const bridge = {
   presetPreview: (id: string) => call<PresetPreview>("preset_preview", { id }),
   scanGeometry: (id: string) => call<ScanGeometry>("scan_geometry", { id }),
   scanSource: (path: string) => call<ScanSource>("scan_source", { path }),
+  scanSourcePreset: (id: string) => call<ScanSource>("scan_source_preset", { id }),
   importScanCrop: (id: string, path: string, x: number, y: number, width: number, height: number) =>
     call<State>("import_scan_crop", { id, path, x, y, width, height }),
+  importScanCropPreset: (id: string, crop: { x: number; y: number; width: number; height: number }) =>
+    call<State>("import_scan_crop_preset", { id, x: crop.x, y: crop.y, width: crop.width, height: crop.height }),
   openScanArchive: () => call<State>("open_scan_archive"),
   clearScanArchive: () => call<State>("clear_scan_archive"),
 

@@ -332,6 +332,12 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
       return source as T;
     }
 
+    case "scan_source_preset": {
+      const match = presetOf(String(args?.id ?? ""));
+      if (!match.has_scan) throw "This preset has no calibration scan.";
+      return { width: 1600, height: 1200, data_url: previewImage("Saved scan", 1600, 1200) } as T;
+    }
+
     case "import_scan_crop": {
       const id = String(args?.id ?? "");
       const match = presetOf(id);
@@ -351,6 +357,20 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
       status = `Calibration scan imported for “${match.name}”`;
       error = null;
       return snapshot() as T;
+    }
+
+    case "import_scan_crop_preset": {
+      const id = String(args?.id ?? "");
+      const match = presetOf(id);
+      if (!match.has_scan) throw "This preset has no calibration scan.";
+      return mockCall<T>("import_scan_crop", {
+        id,
+        path: "C:\\mock\\scans\\gauge.png",
+        x: Number(args?.x),
+        y: Number(args?.y),
+        width: Number(args?.width),
+        height: Number(args?.height),
+      });
     }
 
     case "remove_scan": {

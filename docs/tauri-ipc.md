@@ -119,7 +119,9 @@ event with the same payload. Rejections are plain strings.
 | `preset_preview` | `id` | Returns `PresetPreview`: the stored scan and the generated gauge, both scaled to the same long edge, plus the gauge pixel size. Fetched when a preset is selected or its scan changes; never part of `State`. |
 | `scan_geometry` | `id` | Returns `ScanGeometry` for the preset's gauge: pixel size plus every sampled region in gauge coordinates. Needs no stored scan. |
 | `scan_source` | `path` | Returns `ScanSource` for an image the user picked: real pixel size and a PNG data URL preview. Used by the crop editor before importing. |
+| `scan_source_preset` | `id` | Returns `ScanSource` for the preset's already-saved managed scan, so the crop editor can re-open and refine it. Rejects presets without a scan. |
 | `import_scan_crop` | `id`, `path`, `x`, `y`, `width`, `height` | Imports the integer crop of the picked image, rescaled to the preset's exact gauge size, as the managed scan. Rejects crops outside the source image or smaller than 32x32. |
+| `import_scan_crop_preset` | `id`, `x`, `y`, `width`, `height` | Crops the preset's already-saved managed scan and resaves the result at the exact gauge size, archiving the previous copy. Used by the editor's edit mode. |
 | `open_scan_archive` | — | Opens the archived-scan folder in the OS file manager. |
 | `clear_scan_archive` | — | Empties the archived-scan folder. |
 

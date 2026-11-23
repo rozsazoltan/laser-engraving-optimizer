@@ -124,7 +124,7 @@ export default function App() {
   const [previewCache, setPreviewCache] = createSignal<Record<string, PresetPreview>>({});
   const [previewLoading, setPreviewLoading] = createSignal(false);
   const [geometryCache, setGeometryCache] = createSignal<Record<string, ScanGeometry>>({});
-  const [cropSession, setCropSession] = createSignal<{ id: string; path: string; source: ScanSource } | null>(null);
+  const [cropSession, setCropSession] = createSignal<{ id: string; path: string | null; source: ScanSource } | null>(null);
 
   let unlisten: (() => void) | null = null;
 
@@ -481,12 +481,27 @@ export default function App() {
     });
   }
 
+  function editScan() {
+    const current = selectedPreset();
+    if (!current?.has_scan) return;
+    void run("scan-source", async () => {
+      const [source, geometry] = await Promise.all([
+        bridge.scanSourcePreset(current.id),
+        geometryCache()[current.id] ? Promise.resolve(geometryCache()[current.id]) : bridge.scanGeometry(current.id),
+      ]);
+      setGeometryCache((cache) => ({ ...cache, [current.id]: geometry }));
+      setCropSession({ id: current.id, path: null, source });
+    });
+  }
+
   function importCroppedScan(crop: Crop) {
     const session = cropSession();
     if (!session) return;
     void run("crop-import", async () => {
       adopt(
-        await bridge.importScanCrop(session.id, session.path, crop.x, crop.y, crop.width, crop.height),
+        session.path
+          ? await bridge.importScanCrop(session.id, session.path, crop.x, crop.y, crop.width, crop.height)
+          : await bridge.importScanCropPreset(session.id, crop),
         { keepDraft: true },
       );
       setCropSession(null);
@@ -713,6 +728,9 @@ export default function App() {
                     previewLoading={previewLoading()}
                     geometry={selectedPreset() ? geometryCache()[selectedPreset()!.id] ?? null : null}
                     cropSource={cropSession()?.id === selectedPreset()?.id ? cropSession()!.source : null}
+                    cropCanImport={!!cropSession()}
+                    cropEditingSaved={!!cropSession() && cropSession()?.path === null}
+                    canEditScan={!!selectedPreset()?.has_scan}
                     onScope={selectLaser}
                     onSelect={selectPreset}
                     onAdd={addPreset}
@@ -723,6 +741,7 @@ export default function App() {
                     onRevert={revertPreset}
                     onRemove={removePreset}
                     onImportScan={importScan}
+                    onEditScan={editScan}
                     onCropImport={importCroppedScan}
                     onCropCancel={() => setCropSession(null)}
                     onRemoveScan={removeScan}
