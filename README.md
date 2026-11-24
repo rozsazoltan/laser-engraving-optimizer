@@ -100,11 +100,13 @@ interior of every patch and two thin strips for the local background on either
 side. Use it to judge whether the photo sits where the code expects it. Importing
 a scan opens a crop editor first. The gauge frame is fixed on screen: drag the
 image to pan it, rotate it with the control in the stage corner or by typing an
-exact angle, zoom with the `+` and `−` buttons, and nudge it with the arrow keys
-(one source pixel, `Shift` plus arrow for ten). The X/Y/W/H readout shows the
-source rectangle that will be imported, and the same sampled pixels stay visible
-inside the frame. The crop is rescaled to the gauge size on import, so the result
-always matches the preset geometry.
+exact angle, zoom with the `+` and `−` buttons or the ruler handle, and nudge it
+with the arrow keys (one source pixel, `Shift` plus arrow for ten). The X/Y/W/H
+readout shows the source rectangle that will be imported, and the same sampled
+pixels stay visible inside the frame. The frame may be dragged past the edge of
+the photo; the frame turns red, and the missing area is imported as black. The
+crop is rescaled to the gauge size on import, so the result always matches the
+preset geometry.
 
 Presets and managed scans are stored in
 `%LOCALAPPDATA%\LaserEngravingOptimizer`. Back up that entire directory to retain

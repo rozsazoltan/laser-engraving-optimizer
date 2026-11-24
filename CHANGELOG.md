@@ -37,6 +37,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Sampled-pixel overlay on both calibration previews, and a crop editor on scan
   import with a fixed gauge frame: the image pans, rotates, zooms and takes
   arrow-key nudges while the imported X/Y/W/H rectangle stays readable.
+- The crop frame can be dragged past the photo edge; the frame turns red and the
+  missing area is imported as black.
 - Creality Falcon2 Pro S 22W calibration instructions.
 
 ### Changed

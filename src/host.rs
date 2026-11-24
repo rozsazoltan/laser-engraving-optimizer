@@ -517,6 +517,43 @@ fn load_calibration(
     Calibration::from_scan(spec, &image)
 }
 
+fn crop_with_padding(source: &RgbImage, x: i64, y: i64, width: u32, height: u32) -> RgbImage {
+    let mut out = RgbImage::from_pixel(width, height, image::Rgb([0, 0, 0]));
+    let (source_width, source_height) = source.dimensions();
+    let left = x.max(0) as u32;
+    let top = y.max(0) as u32;
+    let right = (x + width as i64).clamp(0, source_width as i64) as u32;
+    let bottom = (y + height as i64).clamp(0, source_height as i64) as u32;
+    if right > left && bottom > top {
+        let part =
+            image::imageops::crop_imm(source, left, top, right - left, bottom - top).to_image();
+        image::imageops::replace(&mut out, &part, left as i64 - x, top as i64 - y);
+    }
+    out
+}
+
+fn crop_bounds_error(
+    width: i64,
+    height: i64,
+    x: i64,
+    y: i64,
+    source_width: u32,
+    source_height: u32,
+) -> Option<String> {
+    if width < 32 || height < 32 {
+        return Some("Crop must be at least 32x32 pixels.".into());
+    }
+    if width > crate::calibration::MAX_DIMENSION as i64
+        || height > crate::calibration::MAX_DIMENSION as i64
+    {
+        return Some("Crop dimensions exceed safe limits.".into());
+    }
+    if x >= source_width as i64 || y >= source_height as i64 || x + width <= 0 || y + height <= 0 {
+        return Some("Crop does not overlap the image.".into());
+    }
+    None
+}
+
 fn import_crop_to_store(
     store: &mut PresetStore,
     id: &str,
@@ -537,17 +574,10 @@ fn import_crop_to_store(
     }
     let source = rotate_expand(&processing::load_rgb(path)?, angle)?;
     let (source_width, source_height) = source.dimensions();
-    if x < 0
-        || y < 0
-        || x.checked_add(width)
-            .is_none_or(|right| right > source_width as i64)
-        || y.checked_add(height)
-            .is_none_or(|bottom| bottom > source_height as i64)
-    {
-        return Err("Crop is outside the image.".into());
+    if let Some(error) = crop_bounds_error(width, height, x, y, source_width, source_height) {
+        return Err(error);
     }
-    let crop = image::imageops::crop_imm(&source, x as u32, y as u32, width as u32, height as u32)
-        .to_image();
+    let crop = crop_with_padding(&source, x, y, width as u32, height as u32);
     let (target_width, target_height) = preset.calibration.dimensions()?;
     // Triangle resampling matches the preview path's interpolation quality.
     let resized = image::imageops::resize(
@@ -594,20 +624,10 @@ fn stage_preset_crop(
 ) -> Result<PathBuf, String> {
     let source = rotate_expand(&processing::load_rgb(source_path)?, angle)?;
     let (source_width, source_height) = source.dimensions();
-    if width < 32 || height < 32 {
-        return Err("Crop must be at least 32x32 pixels.".into());
+    if let Some(error) = crop_bounds_error(width, height, x, y, source_width, source_height) {
+        return Err(error);
     }
-    if x < 0
-        || y < 0
-        || x.checked_add(width)
-            .is_none_or(|right| right > source_width as i64)
-        || y.checked_add(height)
-            .is_none_or(|bottom| bottom > source_height as i64)
-    {
-        return Err("Crop is outside the image.".into());
-    }
-    let crop = image::imageops::crop_imm(&source, x as u32, y as u32, width as u32, height as u32)
-        .to_image();
+    let crop = crop_with_padding(&source, x, y, width as u32, height as u32);
     let resized = image::imageops::resize(
         &crop,
         target_width,
@@ -1542,8 +1562,8 @@ mod tests {
         let initial_bytes = std::fs::read(&managed).unwrap();
 
         assert_eq!(
-            import_crop_to_store(&mut store, &id, &source_path, 0.0, 180, 150, 32, 32).unwrap_err(),
-            "Crop is outside the image."
+            import_crop_to_store(&mut store, &id, &source_path, 0.0, 400, 400, 32, 32).unwrap_err(),
+            "Crop does not overlap the image."
         );
         assert_eq!(
             import_crop_to_store(&mut store, &id, &source_path, 0.0, 0, 0, 16, 16).unwrap_err(),
@@ -1562,6 +1582,31 @@ mod tests {
             std::fs::read(store.scan_path(preset).unwrap()).unwrap(),
             initial_bytes
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn crop_outside_pads_with_black() {
+        let root = temp_root();
+        let mut store = PresetStore::open(&root).unwrap();
+        let laser_id = store.add_laser("Laser", 40.0).unwrap().id.clone();
+        let mut preset = Preset::new("Pad", &laser_id);
+        preset.calibration.block_size = 32;
+        preset.calibration.rows = 2;
+        preset.calibration.columns = 2;
+        let id = preset.id.clone();
+        store.add(preset).unwrap();
+
+        let source_path = root.join("small.png");
+        RgbImage::from_pixel(64, 64, image::Rgb([255, 255, 255]))
+            .save(&source_path)
+            .unwrap();
+        import_crop_to_store(&mut store, &id, &source_path, 0.0, 48, 48, 32, 32).unwrap();
+        let managed = store.scan_path(&store.presets()[0]).unwrap();
+        let scan = processing::load_rgb(&managed).unwrap();
+        assert_eq!(scan.dimensions(), (64, 64));
+        assert_eq!(scan.get_pixel(4, 4), &image::Rgb([255, 255, 255]));
+        assert_eq!(scan.get_pixel(60, 60), &image::Rgb([0, 0, 0]));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1634,13 +1679,13 @@ mod tests {
             target_width,
             target_height,
             0.0,
-            40,
-            40,
+            1000,
+            1000,
             32,
             32,
         )
         .unwrap_err();
-        assert_eq!(error, "Crop is outside the image.");
+        assert_eq!(error, "Crop does not overlap the image.");
         assert_eq!(std::fs::read(&new_managed).unwrap(), current_bytes);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1703,13 +1748,13 @@ mod tests {
             target_width,
             target_height,
             0.0,
-            140,
-            100,
+            400,
+            400,
             32,
             32,
         )
         .unwrap_err();
-        assert_eq!(error, "Crop is outside the image.");
+        assert_eq!(error, "Crop does not overlap the image.");
         assert_eq!(
             std::fs::read(store.scan_path(&store.presets()[0]).unwrap()).unwrap(),
             managed_bytes

@@ -398,8 +398,8 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
       const width = Number(args?.width);
       const height = Number(args?.height);
       if (!SCAN_EXTENSIONS.includes(extensionOf(path))) throw "Calibration scan must be a PNG or JPEG image.";
-      if (![x, y, width, height].every(Number.isInteger) || x < 0 || y < 0 || width < 32 || height < 32 || x + width > canvas.width || y + height > canvas.height) {
-        throw "The crop is outside the source image or smaller than 32 × 32 px.";
+      if (![x, y, width, height].every(Number.isInteger) || width < 32 || height < 32 || x >= canvas.width || y >= canvas.height || x + width <= 0 || y + height <= 0) {
+        throw "The crop must be at least 32 × 32 px and overlap the image.";
       }
       presets = presets.map((item) => item.id === id ? { ...item, has_scan: true } : item);
       managedScans.set(id, scanSource("Current scan", match.calibration.block_size * match.calibration.columns, match.calibration.block_size * match.calibration.rows));
@@ -419,8 +419,8 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
       if (!Number.isFinite(angle) || angle < -180 || angle > 180) throw "Rotation must be between -180 and 180 degrees.";
       const canvas = rotatedSize(source.width, source.height, angle);
       const x = Number(args?.x), y = Number(args?.y), width = Number(args?.width), height = Number(args?.height);
-      if (![x, y, width, height].every(Number.isInteger) || x < 0 || y < 0 || width < 32 || height < 32 || x + width > canvas.width || y + height > canvas.height) {
-        throw "The crop is outside the source image or smaller than 32 × 32 px.";
+      if (![x, y, width, height].every(Number.isInteger) || width < 32 || height < 32 || x >= canvas.width || y >= canvas.height || x + width <= 0 || y + height <= 0) {
+        throw "The crop must be at least 32 × 32 px and overlap the image.";
       }
       managedScans.set(id, scanSource("Current scan", match.calibration.block_size * match.calibration.columns, match.calibration.block_size * match.calibration.rows));
       cache.clear();
@@ -439,8 +439,8 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
       if (!Number.isFinite(angle) || angle < -180 || angle > 180) throw "Rotation must be between -180 and 180 degrees.";
       const canvas = rotatedSize(source.width, source.height, angle);
       const x = Number(args?.x), y = Number(args?.y), width = Number(args?.width), height = Number(args?.height);
-      if (![x, y, width, height].every(Number.isInteger) || x < 0 || y < 0 || width < 32 || height < 32 || x + width > canvas.width || y + height > canvas.height) {
-        throw "The crop is outside the source image or smaller than 32 × 32 px.";
+      if (![x, y, width, height].every(Number.isInteger) || width < 32 || height < 32 || x >= canvas.width || y >= canvas.height || x + width <= 0 || y + height <= 0) {
+        throw "The crop must be at least 32 × 32 px and overlap the image.";
       }
       managedScans.set(id, scanSource("Current scan", match.calibration.block_size * match.calibration.columns, match.calibration.block_size * match.calibration.rows));
       cache.clear();

@@ -128,16 +128,18 @@ export function ScanCropEditor(props: Props) {
     return Math.max(120, Math.min(740, available * ratio(), 380 * ratio()));
   };
   const scale = () => frameScreenWidth() / frame().width;
-  const clampPan = (value: { x: number; y: number }) => {
+  const crop = (): Crop => ({ x: Math.round(pan().x), y: Math.round(pan().y), ...frame() });
+  const outOfBounds = () => {
     const size = canvasSize();
     const box = frame();
-    return {
-      x: clamp(value.x, 0, size.width - box.width),
-      y: clamp(value.y, 0, size.height - box.height),
-    };
+    const position = pan();
+    return (
+      position.x < 0 ||
+      position.y < 0 ||
+      position.x + box.width > size.width ||
+      position.y + box.height > size.height
+    );
   };
-  const setPanClamped = (value: { x: number; y: number }) => setPan(clampPan(value));
-  const crop = (): Crop => ({ ...pan(), ...frame() });
 
   const setAngleValue = (value: number) => {
     if (!Number.isFinite(value)) return;
@@ -147,7 +149,7 @@ export function ScanCropEditor(props: Props) {
     batch(() => {
       setAngle(next);
       const box = frame();
-      setPanClamped({
+      setPan({
         x: before.x + (before.width - box.width) / 2,
         y: before.y + (before.height - box.height) / 2,
       });
@@ -162,7 +164,7 @@ export function ScanCropEditor(props: Props) {
     batch(() => {
       setZoom(next);
       const box = frame();
-      setPanClamped({
+      setPan({
         x: before.x + (before.width - box.width) / 2,
         y: before.y + (before.height - box.height) / 2,
       });
@@ -234,7 +236,7 @@ export function ScanCropEditor(props: Props) {
   };
 
   const flushPan = () => {
-    if (pendingPan) setPanClamped(pendingPan);
+    if (pendingPan) setPan(pendingPan);
     clearPendingPan();
   };
 
@@ -284,10 +286,10 @@ export function ScanCropEditor(props: Props) {
     event.preventDefault();
     const distance = event.shiftKey ? 10 : 1;
     const { x, y } = pan();
-    if (event.key === "ArrowLeft") setPanClamped({ x: x + distance, y });
-    if (event.key === "ArrowRight") setPanClamped({ x: x - distance, y });
-    if (event.key === "ArrowUp") setPanClamped({ x, y: y + distance });
-    if (event.key === "ArrowDown") setPanClamped({ x, y: y - distance });
+    if (event.key === "ArrowLeft") setPan({ x: x + distance, y });
+    if (event.key === "ArrowRight") setPan({ x: x - distance, y });
+    if (event.key === "ArrowUp") setPan({ x, y: y + distance });
+    if (event.key === "ArrowDown") setPan({ x, y: y - distance });
   };
 
   const imageStyle = () => {
@@ -333,7 +335,7 @@ export function ScanCropEditor(props: Props) {
               <img src={props.source.data_url} alt="Selected calibration scan" draggable={false} />
             </div>
           </div>
-          <div class="crop-window" style={frameStyle()}>
+          <div class={outOfBounds() ? "crop-window invalid" : "crop-window"} style={frameStyle()}>
             {props.geometry && <SampleOverlay geometry={props.geometry} />}
           </div>
           <div class="frame-handles" style={frameStyle()}>
@@ -377,6 +379,7 @@ export function ScanCropEditor(props: Props) {
           }} /></label>
         </div>
         <p class="hint mono crop-size">{crop().width} × {crop().height} → {props.targetWidth} × {props.targetHeight} px</p>
+        {outOfBounds() && <p class="hint warn">The frame extends past the photo. The missing area is filled with black.</p>}
         {!props.canImport && <p class="hint warn">This saved scan can be previewed, but saving its crop needs host support.</p>}
         <div class="row-actions">
           <button type="button" class="btn primary" disabled={props.busy || !props.canImport}

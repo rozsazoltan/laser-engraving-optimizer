@@ -1653,6 +1653,10 @@ select.input {
   overflow: hidden;
 }
 
+.crop-window.invalid {
+  outline-color: #ff5c5c;
+}
+
 .frame-handles {
   position: absolute;
   top: 50%;
