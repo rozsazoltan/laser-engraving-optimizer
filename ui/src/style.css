@@ -1480,6 +1480,21 @@ select.input {
   line-height: 1.5;
 }
 
+.field-label .info-btn {
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.field-hint {
+  display: block;
+  max-width: 46ch;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: normal;
+}
+
 .scan-crop-editor {
   display: grid;
   gap: 12px;

@@ -236,6 +236,7 @@ export function PresetsArea(props: Props) {
                       max={8}
                       step={0.05}
                       disabled={props.busy}
+                      hint="Only changes how the gauge spreads its grey levels, not the photo tone curve. 1.0 is linear; 1.8 (default) puts more patches in the light and mid ranges where the laser response still changes. If the light patches stay white, lower it to 1.2-1.4. Changing it needs a new gauge and a new scan."
                       onValue={(exponent) => props.onGeometry({ exponent })}
                     />
                     <NumberField
