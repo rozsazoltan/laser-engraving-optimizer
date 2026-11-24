@@ -2,6 +2,7 @@ import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from
 import { bridge, errorText } from "./bridge";
 import { Chrome } from "./chrome";
 import { DocStrip, EngraveArea } from "./engrave";
+import { FaqArea } from "./faq";
 import { LasersArea } from "./lasers";
 import { PresetsArea } from "./presets";
 import type { Crop } from "./scancrop";
@@ -819,6 +820,10 @@ export default function App() {
                     onOpenPresets={() => setArea("presets")}
                     onOpenLasers={() => setArea("lasers")}
                   />
+                </Show>
+
+                <Show when={area() === "faq"}>
+                  <FaqArea />
                 </Show>
 
                 <footer class={`statusbar ${activeError() ? "status-error" : ""}`} role="status" aria-live="polite">

@@ -6,6 +6,7 @@ const AREAS: { id: Area; label: string }[] = [
   { id: "lasers", label: "Lasers" },
   { id: "presets", label: "Presets" },
   { id: "engrave", label: "Engrave" },
+  { id: "faq", label: "FAQ" },
 ];
 
 const ignore = () => {

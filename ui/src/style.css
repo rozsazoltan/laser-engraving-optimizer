@@ -637,6 +637,26 @@ select.input {
   color: var(--muted);
 }
 
+.faq-list {
+  display: grid;
+  gap: 22px;
+  max-width: 76ch;
+  margin: 22px 0 0;
+}
+
+.faq-entry dt {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.faq-entry dd {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .area-controls {
   display: flex;
   align-items: flex-end;
@@ -1423,6 +1443,41 @@ select.input {
   height: 10px;
   background: color-mix(in srgb, var(--accent) 35%, transparent);
   border: 1px solid var(--accent);
+}
+
+.info-btn {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #1a1a1a;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-style: italic;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.info-btn:hover {
+  background: #222;
+  color: #eee;
+}
+
+.info-btn[aria-expanded="true"] {
+  color: var(--accent);
+}
+
+.sample-info {
+  max-width: 60ch;
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .scan-crop-editor {

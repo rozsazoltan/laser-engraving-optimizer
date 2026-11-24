@@ -54,6 +54,7 @@ function TrashIcon() {
 
 export function PresetsArea(props: Props) {
   const [confirmClear, setConfirmClear] = createSignal(false);
+  const [showSampleInfo, setShowSampleInfo] = createSignal(false);
   const laser = () => props.lasers.find((item) => item.id === props.selectedLaser) ?? null;
   const gaugeWidth = () => (props.draft ? props.draft.calibration.block_size * props.draft.calibration.columns : 0);
   const gaugeHeight = () => (props.draft ? props.draft.calibration.block_size * props.draft.calibration.rows : 0);
@@ -373,7 +374,28 @@ export function PresetsArea(props: Props) {
                     </div>
                   </div>
                   <p class="hint mono preview-size">{props.preview ? `${props.preview.width} × ${props.preview.height} px` : `${gaugeWidth()} × ${gaugeHeight()} px`}{props.previewLoading ? " · Updating preview…" : ""}</p>
-                  <p class="sample-legend"><span class="sample-swatch" /> Sampled pixels</p>
+                  <div class="sample-legend">
+                    <span class="sample-swatch" /> Sampled pixels
+                    <button
+                      type="button"
+                      class="info-btn"
+                      aria-expanded={showSampleInfo()}
+                      aria-label="What the sampled pixels mean"
+                      title="What the sampled pixels mean"
+                      onClick={() => setShowSampleInfo((open) => !open)}
+                    >
+                      i
+                    </button>
+                  </div>
+                  <Show when={showSampleInfo()}>
+                    <p class="sample-info">
+                      The boxes stay inside each patch on purpose: 15% of the patch width and 20% of
+                      its height are skipped on every side, so laser edge bleed and wood grain cannot
+                      skew the reading. The two thin strips just outside the patch measure the
+                      unburned background. These margins are fixed; changing them would change the
+                      fitted curve.
+                    </p>
+                  </Show>
                   <div class="row-actions">
                     <button type="button" class="btn" disabled={props.busy} onClick={props.onOpenArchive}>Open archive</button>
                     <button type="button" class="btn icon" title="Empty the scan archive" aria-label="Empty the scan archive" disabled={props.busy} onClick={() => setConfirmClear(true)}>

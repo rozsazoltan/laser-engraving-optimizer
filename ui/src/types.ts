@@ -74,7 +74,7 @@ export type DocTab = {
   resultKey: string | null;
 };
 
-export type Area = "lasers" | "presets" | "engrave";
+export type Area = "lasers" | "presets" | "engrave" | "faq";
 
 export const DEFAULT_CALIBRATION: CalibrationSpec = {
   block_size: 400,
