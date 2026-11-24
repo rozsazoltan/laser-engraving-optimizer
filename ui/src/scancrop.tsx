@@ -69,7 +69,13 @@ export function ScanCropEditor(props: Props) {
   const ratio = () => props.targetWidth / props.targetHeight;
   const [angle, setAngle] = createSignal(0);
   const canvasSize = createMemo(() => rotatedSize(props.source.width, props.source.height, angle()));
-  const frame = createMemo(() => frameSize(canvasSize(), ratio()));
+  const baseFrame = createMemo(() => frameSize(canvasSize(), ratio()));
+  const [zoom, setZoom] = createSignal(1);
+  const frame = createMemo(() => {
+    const base = baseFrame();
+    const width = Math.max(1, Math.min(base.width, Math.round(base.width / zoom())));
+    return { width, height: clamp(width / ratio(), 1, base.height) };
+  });
   const [pan, setPan] = createSignal({ x: 0, y: 0 });
   const [drag, setDrag] = createSignal<
     | { mode: "pan"; pointerId: number; px: number; py: number; scale: number; pan: { x: number; y: number } }
@@ -99,6 +105,7 @@ export function ScanCropEditor(props: Props) {
     props.sourceMode;
     clearPendingPan();
     setAngle(0);
+    setZoom(1);
     const { width, height } = frameSize(source, ratio());
     setPan({
       x: Math.max(0, Math.round((source.width - width) / 2)),
@@ -137,6 +144,21 @@ export function ScanCropEditor(props: Props) {
     const next = normalizedAngle(value);
     batch(() => {
       setAngle(next);
+      const box = frame();
+      setPanClamped({
+        x: before.x + (before.width - box.width) / 2,
+        y: before.y + (before.height - box.height) / 2,
+      });
+    });
+  };
+
+  const setZoomValue = (value: number) => {
+    if (!Number.isFinite(value)) return;
+    flushPan();
+    const before = crop();
+    const next = Math.max(1, Math.min(20, Math.round(value * 1000) / 1000));
+    batch(() => {
+      setZoom(next);
       const box = frame();
       setPanClamped({
         x: before.x + (before.width - box.width) / 2,
@@ -278,9 +300,15 @@ export function ScanCropEditor(props: Props) {
             onPointerDown={beginRotate}>
             ↻
           </button>
+          <div class="zoom-controls" role="group" aria-label="Zoom" onPointerDown={(event) => event.stopPropagation()}>
+            <button type="button" aria-label="Zoom in" disabled={props.busy || zoom() >= 20}
+              onClick={() => setZoomValue(zoom() * 1.1)}>+</button>
+            <button type="button" aria-label="Zoom out" disabled={props.busy || zoom() <= 1}
+              onClick={() => setZoomValue(zoom() / 1.1)}>−</button>
+          </div>
         </div>
         <div class="crop-fields-head">
-          <span class="section-label">Rotated canvas {canvasSize().width} × {canvasSize().height} px · frame {crop().width} × {crop().height} px</span>
+          <span class="section-label">Rotated canvas {canvasSize().width} × {canvasSize().height} px · frame {crop().width} × {crop().height} px · zoom {Math.round(zoom() * 100) / 100}×</span>
         </div>
         <div class="crop-fields crop-readouts">
           <label><span class="field-label">X (px)</span><span class="mono">{crop().x}</span></label>

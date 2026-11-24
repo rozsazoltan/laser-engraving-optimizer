@@ -1673,6 +1673,35 @@ select.input {
   cursor: grabbing;
 }
 
+.zoom-controls {
+  position: absolute;
+  top: 44px;
+  right: 8px;
+  z-index: 5;
+  display: grid;
+  gap: 4px;
+}
+.zoom-controls > button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid #777;
+  border-radius: 6px;
+  background: #161616;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.zoom-controls > button:hover:not(:disabled) {
+  border-color: #4da3ff;
+  color: #4da3ff;
+}
+.zoom-controls > button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
 .crop-fields > label {
   display: grid;
   min-width: 0;
