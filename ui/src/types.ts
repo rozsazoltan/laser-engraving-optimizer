@@ -75,6 +75,7 @@ export type DocTab = {
 };
 
 export type Area = "lasers" | "presets" | "engrave" | "faq";
+export type SpeedUnit = "mm/s" | "mm/min";
 
 export const DEFAULT_CALIBRATION: CalibrationSpec = {
   block_size: 400,

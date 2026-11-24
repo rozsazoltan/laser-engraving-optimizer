@@ -164,6 +164,49 @@ body {
   height: 100%;
 }
 
+.chrome-settings {
+  position: relative;
+  z-index: 4;
+}
+
+.settings-btn {
+  width: 30px;
+}
+
+.settings-popover {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  z-index: 10;
+  display: grid;
+  gap: 10px;
+  width: 190px;
+  padding: 12px;
+  background: #161616;
+  box-shadow: 0 8px 24px #0009;
+}
+
+.speed-unit-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.speed-unit-options button {
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.speed-unit-options button.active {
+  background: #34312a;
+  color: var(--text);
+}
+
 .icon-btn {
   display: grid;
   place-items: center;
@@ -522,6 +565,7 @@ select.input {
 }
 
 .field {
+  position: relative;
   display: grid;
   gap: 5px;
   min-width: 0;
@@ -1485,14 +1529,20 @@ select.input {
   vertical-align: middle;
 }
 
-.field-hint {
-  display: block;
-  max-width: 46ch;
-  margin-top: 5px;
+.field-tooltip {
+  position: fixed;
+  z-index: 20;
+  width: max-content;
+  max-width: min(32ch, calc(100vw - 24px));
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #161616;
+  box-shadow: 0 6px 20px #000a;
   color: var(--muted);
   font-size: 11px;
-  line-height: 1.45;
-  white-space: normal;
+  line-height: 1.5;
+  pointer-events: none;
 }
 
 .scan-crop-editor {

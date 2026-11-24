@@ -20,12 +20,21 @@ import {
   type ProcessingSettings,
   type ScanGeometry,
   type ScanSource,
+  type SpeedUnit,
   type State,
 } from "./types";
 
 const SPLASH_FADE_MS = 170;
 
 const PHOTO_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"];
+
+function savedSpeedUnit(): SpeedUnit {
+  try {
+    return localStorage.getItem("engraving.speedUnit") === "mm/min" ? "mm/min" : "mm/s";
+  } catch {
+    return "mm/s";
+  }
+}
 
 const WORKING_LABEL: Record<string, string> = {
   "laser-add": "Adding laser",
@@ -122,6 +131,7 @@ function ConfirmStrip(props: { pending: Pending; onCancel: () => void; onConfirm
 export default function App() {
   const [data, setData] = createSignal<State | null>(null);
   const [area, setArea] = createSignal<Area>("engrave");
+  const [speedUnit, setSpeedUnit] = createSignal<SpeedUnit>(savedSpeedUnit());
   const [draft, setDraft] = createSignal<Draft | null>(null);
   const [tabs, setTabs] = createSignal<DocTab[]>([]);
   const [activeTabId, setActiveTabId] = createSignal<string | null>(null);
@@ -136,6 +146,15 @@ export default function App() {
   const [previewLoading, setPreviewLoading] = createSignal(false);
   const [geometryCache, setGeometryCache] = createSignal<Record<string, ScanGeometry>>({});
   const [cropSession, setCropSession] = createSignal<{ id: string; path: string | null; source: ScanSource; sourceMode: "original" | "current" | null } | null>(null);
+
+  function changeSpeedUnit(unit: SpeedUnit) {
+    setSpeedUnit(unit);
+    try {
+      localStorage.setItem("engraving.speedUnit", unit);
+    } catch {
+      /* Storage can be unavailable in browser preview mode. */
+    }
+  }
 
   let unlisten: (() => void) | null = null;
 
@@ -716,7 +735,7 @@ export default function App() {
   return (
     <>
       <div class={`app ${area() === "engrave" ? "with-tabs" : ""}`}>
-        <Chrome area={area()} onArea={setArea} />
+        <Chrome area={area()} onArea={setArea} speedUnit={speedUnit()} onSpeedUnit={changeSpeedUnit} />
 
         <Show when={area() === "engrave"}>
           <DocStrip
@@ -778,6 +797,7 @@ export default function App() {
                     cropEditingSaved={!!cropSession() && cropSession()?.path === null}
                     cropSourceMode={cropSession()?.sourceMode ?? null}
                     canEditScan={!!selectedPreset()?.has_scan}
+                    speedUnit={speedUnit()}
                     onScope={selectLaser}
                     onSelect={selectPreset}
                     onAdd={addPreset}

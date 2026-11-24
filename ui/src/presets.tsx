@@ -1,5 +1,5 @@
 import { For, Show, createSignal } from "solid-js";
-import { COLOR_METHODS, formatPower, laserLabel, powerWatts, type CalibrationSpec, type ColorMethod, type Draft, type Laser, type Preset, type PresetPreview, type ProcessingSettings, type ScanGeometry, type ScanSource } from "./types";
+import { COLOR_METHODS, formatPower, laserLabel, powerWatts, type CalibrationSpec, type ColorMethod, type Draft, type Laser, type Preset, type PresetPreview, type ProcessingSettings, type ScanGeometry, type ScanSource, type SpeedUnit } from "./types";
 import { Field, NumberField } from "./fields";
 import { SampleOverlay, ScanCropEditor, type Crop } from "./scancrop";
 
@@ -20,6 +20,7 @@ type Props = {
   cropEditingSaved: boolean;
   cropSourceMode: "original" | "current" | null;
   canEditScan: boolean;
+  speedUnit: SpeedUnit;
   onScope: (laserId: string) => void;
   onSelect: (id: string) => void;
   onAdd: () => void;
@@ -152,7 +153,7 @@ export function PresetsArea(props: Props) {
           </ul>
         </Show>
 
-        <Show when={props.draft && props.preset} fallback={<div class="preset-editor" />}>
+        <Show when={props.draft} fallback={<div class="preset-editor" />}>
           {(edited) => {
             const current = () => props.preset!;
             return (
@@ -180,9 +181,12 @@ export function PresetsArea(props: Props) {
                 <div class="editor-section">
                   <div class="section-head"><span class="section-label">Recording settings</span></div>
                   <div class="grid-2">
-                    <NumberField label="Speed (mm/s)" value={edited().speed} min={0} max={10000} step={1} disabled={props.busy} onValue={(speed) => props.onEdit({ speed })} />
-                    <NumberField label="Power (%)" value={edited().power_percent} min={0} max={100} step={1} disabled={props.busy} onValue={(power_percent) => props.onEdit({ power_percent })} />
-                    <NumberField label="DPI" value={edited().dpi} min={0} max={10000} step={1} disabled={props.busy} onValue={(dpi) => props.onEdit({ dpi })} />
+                    <NumberField label={`Speed (${props.speedUnit})`} value={props.speedUnit === "mm/min" ? Math.round(edited().speed * 60) : edited().speed} min={0} max={props.speedUnit === "mm/min" ? 600000 : 10000} step={1} disabled={props.busy} hint="Recorded for reference only, they do not change processing. Keep them at the values the gauge was engraved with: a calibration is valid only for that speed, power and DPI." onValue={(value) => {
+                      const speed = props.speedUnit === "mm/min" ? Math.round((value / 60) * 10) / 10 : value;
+                      props.onEdit({ speed: Math.max(0, speed) });
+                    }} />
+                    <NumberField label="Power (%)" value={edited().power_percent} min={0} max={100} step={1} disabled={props.busy} hint="Recorded for reference only, they do not change processing. Keep them at the values the gauge was engraved with: a calibration is valid only for that speed, power and DPI." onValue={(power_percent) => props.onEdit({ power_percent })} />
+                    <NumberField label="DPI" value={edited().dpi} min={0} max={10000} step={1} disabled={props.busy} hint="Recorded for reference only, they do not change processing. Keep them at the values the gauge was engraved with: a calibration is valid only for that speed, power and DPI." onValue={(dpi) => props.onEdit({ dpi })} />
                     <p class="hint power-hint">{formatPower(edited().power_percent, powerWatts(edited(), laser()))}</p>
                   </div>
                 </div>
@@ -227,6 +231,7 @@ export function PresetsArea(props: Props) {
                       max={4096}
                       step={1}
                       disabled={props.busy}
+                      hint="Size of one gauge cell in pixels. The gauge is columns × block size wide and rows × block size tall, so changing it changes the scan size you must photograph."
                       onValue={(block_size) => props.onGeometry({ block_size })}
                     />
                     <NumberField
@@ -246,6 +251,7 @@ export function PresetsArea(props: Props) {
                       max={64}
                       step={1}
                       disabled={props.busy}
+                      hint="Number of gauge rows. The top-left cell stays unburned as a paper reference; the remaining cells step from light to dark."
                       onValue={(rows) => props.onGeometry({ rows })}
                     />
                     <NumberField
@@ -255,6 +261,7 @@ export function PresetsArea(props: Props) {
                       max={64}
                       step={1}
                       disabled={props.busy}
+                      hint="Number of gauge columns. Rows × columns − 1 cells are measured, so more cells give a finer calibration."
                       onValue={(columns) => props.onGeometry({ columns })}
                     />
                   </div>
@@ -272,6 +279,7 @@ export function PresetsArea(props: Props) {
                       max={4}
                       step={0.05}
                       disabled={props.busy}
+                      hint="Tone curve applied to the photo. 1.0 is neutral, higher values lighten the midtones (gentler portraits), lower values darken them."
                       onValue={(gamma) => props.onProcessing({ gamma })}
                     />
                     <NumberField
@@ -281,9 +289,10 @@ export function PresetsArea(props: Props) {
                       max={16}
                       step={0.1}
                       disabled={props.busy}
+                      hint="Local contrast boost. 0 turns it off, 4 is the default; higher values add contrast and grain, lower values keep the surface calm."
                       onValue={(clahe_clip) => props.onProcessing({ clahe_clip })}
                     />
-                    <Field label="Colour method" span>
+                    <Field label="Colour method" span hint="Decolorize keeps tonal separation between colours (legacy behaviour). Luma is a plain weighted grey conversion.">
                       <select
                         class="input"
                         disabled={props.busy}
