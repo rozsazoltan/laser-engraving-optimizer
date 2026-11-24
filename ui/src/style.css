@@ -1570,6 +1570,7 @@ select.input {
 }
 
 .crop-viewport {
+  position: relative;
   max-height: 400px;
   overflow: auto;
   background: #050505;
@@ -1598,15 +1599,15 @@ select.input {
 }
 .rotation-handle {
   position: absolute;
-  top: 4px;
-  right: 4px;
-  z-index: 3;
-  width: 26px;
-  height: 26px;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
+  width: 30px;
+  height: 30px;
   padding: 0;
-  border: 1px solid var(--text);
-  border-radius: 50%;
-  background: var(--accent);
+  border: 1px solid #777;
+  border-radius: 6px;
+  background: #161616;
   color: var(--text);
   font-size: 18px;
   line-height: 1;

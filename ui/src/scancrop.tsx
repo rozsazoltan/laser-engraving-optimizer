@@ -99,15 +99,10 @@ export function ScanCropEditor(props: Props) {
   onMount(() => window.addEventListener("keydown", closeOnEscape));
   onCleanup(() => window.removeEventListener("keydown", closeOnEscape));
 
-  const baseCrop = () => initialCrop(props.source, ratio());
-  const fitCrop = () => initialCrop(canvasSize(), ratio());
   const baseScale = () => Math.min(740 / props.source.width, 380 / props.source.height) * zoom();
-  const scale = () => Math.min(
-    baseCrop().width * baseScale() / fitCrop().width,
-    baseCrop().height * baseScale() / fitCrop().height,
-  );
-  const displayWidth = () => canvasSize().width * scale();
-  const displayHeight = () => canvasSize().height * scale();
+  const scale = baseScale;
+  const displayWidth = () => props.source.width * scale();
+  const displayHeight = () => props.source.height * scale();
   const sourceMin = () => Math.min(32, canvasSize().width, canvasSize().height);
   const maxCropWidth = (x: number, y: number) =>
     Math.floor(Math.min(canvasSize().width - x, (canvasSize().height - y) * ratio()));
@@ -132,11 +127,10 @@ export function ScanCropEditor(props: Props) {
       };
     });
 
-  const setAngleValue = (value: number, resetCrop: boolean) => {
+  const setAngleValue = (value: number) => {
     const next = normalizedAngle(value);
     setAngle(next);
     setAngleInput(String(next));
-    if (resetCrop) setCrop(initialCrop(rotatedSize(props.source.width, props.source.height, next), ratio()));
   };
 
   const beginCropDrag = (event: PointerEvent, mode: "move" | "resize") => {
@@ -171,7 +165,6 @@ export function ScanCropEditor(props: Props) {
       const next = normalizedAngle(event.shiftKey ? Math.round(raw / 15) * 15 : raw);
       setAngle(next);
       setAngleInput(String(next));
-      setCrop(initialCrop(rotatedSize(props.source.width, props.source.height, next), ratio()));
       return;
     }
     const dx = (event.clientX - active.px) / scale();
@@ -190,10 +183,7 @@ export function ScanCropEditor(props: Props) {
     setCrop({ ...active.crop, width: Math.round(height * ratio()), height });
   };
 
-  const endDrag = () => {
-    if (drag()?.mode === "rotate") setCrop(initialCrop(canvasSize(), ratio()));
-    setDrag(null);
-  };
+  const endDrag = () => setDrag(null);
 
   const nudge = (event: KeyboardEvent) => {
     if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
@@ -207,25 +197,12 @@ export function ScanCropEditor(props: Props) {
     if (event.key === "ArrowDown") setPosition("y", y + distance);
   };
 
-  const boxStyle = () => {
-    const fitted = fitCrop();
-    if (crop().x === fitted.x && crop().y === fitted.y && crop().width === fitted.width && crop().height === fitted.height) {
-      const width = baseCrop().width * baseScale();
-      const height = baseCrop().height * baseScale();
-      return {
-        left: `${(canvasSize().width * scale() - width) / 2}px`,
-        top: `${(canvasSize().height * scale() - height) / 2}px`,
-        width: `${width}px`,
-        height: `${height}px`,
-      };
-    }
-    return {
-      left: `${crop().x * scale()}px`,
-      top: `${crop().y * scale()}px`,
-      width: `${crop().width * scale()}px`,
-      height: `${crop().height * scale()}px`,
-    };
-  };
+  const boxStyle = () => ({
+    left: `${crop().x * scale()}px`,
+    top: `${crop().y * scale()}px`,
+    width: `${crop().width * scale()}px`,
+    height: `${crop().height * scale()}px`,
+  });
   const valid = () =>
     crop().width >= 32 && crop().height >= 32 &&
     crop().x >= 0 && crop().y >= 0 &&
@@ -252,11 +229,7 @@ export function ScanCropEditor(props: Props) {
           </div>
         </div>
         <div class="crop-viewport" tabindex="0" onKeyDown={nudge} aria-label="Scan crop preview. Use arrow keys to move one source pixel.">
-          <div ref={canvasElement} class="crop-canvas" style={{
-            width: `${displayWidth()}px`,
-            height: `${displayHeight()}px`,
-            transform: `translateY(${(props.source.height * baseScale() - displayHeight()) / 2}px)`,
-          }}>
+          <div ref={canvasElement} class="crop-canvas" style={{ width: `${displayWidth()}px`, height: `${displayHeight()}px` }}>
             <div class="rotated-image" style={{
               width: `${props.source.width * scale()}px`,
               height: `${props.source.height * scale()}px`,
@@ -276,12 +249,12 @@ export function ScanCropEditor(props: Props) {
               <button type="button" class="crop-handle" aria-label="Resize crop" disabled={props.busy}
                 onPointerDown={(event) => beginCropDrag(event, "resize")} onPointerMove={moveDrag}
                 onPointerUp={endDrag} onPointerCancel={endDrag} />
-              <button type="button" class="rotation-handle" aria-label="Rotate image" disabled={props.busy}
-                onPointerDown={beginRotate} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
-                ↻
-              </button>
             </div>
           </div>
+          <button type="button" class="rotation-handle" aria-label="Rotate image" disabled={props.busy}
+            onPointerDown={beginRotate} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
+            ↻
+          </button>
         </div>
         <div class="crop-fields-head">
           <span class="section-label">Rotated canvas {canvasSize().width} × {canvasSize().height} px</span>
@@ -296,13 +269,14 @@ export function ScanCropEditor(props: Props) {
             setAngleInput(text);
             if (text.trim() === "") return;
             const value = Number(text);
-            if (Number.isFinite(value)) setAngleValue(value, true);
+            if (Number.isFinite(value)) setAngleValue(value);
           }} onBlur={() => {
             const value = Number(angleInput());
             if (angleInput().trim() === "" || !Number.isFinite(value)) setAngleInput(String(angle()));
-            else setAngleValue(value, true);
+            else setAngleValue(value);
           }} /></label>
         </div>
+        {!valid() && <p class="hint warn">Crop is outside the rotated canvas; adjust X/Y/W/H or the angle.</p>}
         <p class="hint mono crop-size">{crop().width} × {crop().height} → {props.targetWidth} × {props.targetHeight} px</p>
         {!props.canImport && <p class="hint warn">This saved scan can be previewed, but saving its crop needs host support.</p>}
         <div class="row-actions">
