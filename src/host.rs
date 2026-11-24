@@ -1095,10 +1095,20 @@ pub async fn save_report(
 
 #[tauri::command]
 pub async fn pick_open_file(title: String, extensions: Vec<String>) -> Option<String> {
+    let extensions: Vec<String> = extensions
+        .iter()
+        .map(|extension| extension.trim_start_matches('.').to_lowercase())
+        .filter(|extension| !extension.is_empty())
+        .collect();
     let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
-    for extension in &extensions {
-        dialog = dialog.add_filter(extension.to_uppercase(), &[extension.as_str()]);
+    // One combined filter: several filters would leave only the first one active on Windows.
+    if extensions.len() == 1 {
+        dialog = dialog.add_filter(extensions[0].to_uppercase(), &[extensions[0].as_str()]);
+    } else if !extensions.is_empty() {
+        let patterns: Vec<&str> = extensions.iter().map(String::as_str).collect();
+        dialog = dialog.add_filter("Images", &patterns);
     }
+    dialog = dialog.add_filter("All files", &["*"]);
     dialog
         .pick_file()
         .await
