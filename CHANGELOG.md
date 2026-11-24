@@ -35,8 +35,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   without a scan, is flagged in the list, and refuses to process until a new scan
   is imported.
 - Sampled-pixel overlay on both calibration previews, and a crop editor on scan
-  import with drag, resize, zoom, exact numeric fields, and one-pixel arrow-key
-  nudging.
+  import with a fixed gauge frame: the image pans, rotates and takes arrow-key
+  nudges while the imported X/Y/W/H rectangle stays readable.
 - Creality Falcon2 Pro S 22W calibration instructions.
 
 ### Changed
