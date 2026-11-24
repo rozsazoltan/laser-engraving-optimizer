@@ -1449,8 +1449,7 @@ select.input {
   left: 50%;
   transform-origin: center;
 }
-.rotated-image > img,
-.rotated-image > .sample-overlay {
+.rotated-image > img {
   display: block;
   position: absolute;
   inset: 0;
@@ -1594,9 +1593,13 @@ select.input {
   touch-action: none;
   cursor: move;
 }
-
+.crop-window > .sample-overlay {
+  overflow: hidden;
+}
 .rotation-handle {
   position: absolute;
+  top: 4px;
+  right: 4px;
   z-index: 3;
   width: 26px;
   height: 26px;
@@ -1609,7 +1612,6 @@ select.input {
   line-height: 1;
   cursor: grab;
   touch-action: none;
-  transform: translate(-50%, -150%);
 }
 .rotation-handle:active {
   cursor: grabbing;

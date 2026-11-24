@@ -69,10 +69,6 @@ function angleDelta(value: number) {
   return ((value + 180) % 360 + 360) % 360 - 180;
 }
 
-function fullCrop(source: { width: number; height: number }): Crop {
-  return { x: 0, y: 0, width: source.width, height: source.height };
-}
-
 export function ScanCropEditor(props: Props) {
   const ratio = () => props.targetWidth / props.targetHeight;
   const [angle, setAngle] = createSignal(0);
@@ -89,10 +85,10 @@ export function ScanCropEditor(props: Props) {
 
   createEffect(() => {
     const source = props.source;
-    const mode = props.sourceMode;
+    props.sourceMode;
     setAngle(0);
     setAngleInput("0");
-    setCrop(mode === "current" ? fullCrop(source) : initialCrop(source, ratio()));
+    setCrop(initialCrop(source, ratio()));
     setZoom(1);
     setDrag(null);
   });
@@ -103,7 +99,13 @@ export function ScanCropEditor(props: Props) {
   onMount(() => window.addEventListener("keydown", closeOnEscape));
   onCleanup(() => window.removeEventListener("keydown", closeOnEscape));
 
-  const scale = () => Math.min(740 / canvasSize().width, 380 / canvasSize().height) * zoom();
+  const baseCrop = () => initialCrop(props.source, ratio());
+  const fitCrop = () => initialCrop(canvasSize(), ratio());
+  const baseScale = () => Math.min(740 / props.source.width, 380 / props.source.height) * zoom();
+  const scale = () => Math.min(
+    baseCrop().width * baseScale() / fitCrop().width,
+    baseCrop().height * baseScale() / fitCrop().height,
+  );
   const displayWidth = () => canvasSize().width * scale();
   const displayHeight = () => canvasSize().height * scale();
   const sourceMin = () => Math.min(32, canvasSize().width, canvasSize().height);
@@ -169,17 +171,7 @@ export function ScanCropEditor(props: Props) {
       const next = normalizedAngle(event.shiftKey ? Math.round(raw / 15) * 15 : raw);
       setAngle(next);
       setAngleInput(String(next));
-      const size = rotatedSize(props.source.width, props.source.height, next);
-      setCrop((current) => {
-        const width = Math.min(current.width, size.width, Math.round(size.height * ratio()));
-        const height = Math.min(Math.round(width / ratio()), size.height);
-        return {
-          x: clamp(current.x, 0, size.width - width),
-          y: clamp(current.y, 0, size.height - height),
-          width,
-          height,
-        };
-      });
+      setCrop(initialCrop(rotatedSize(props.source.width, props.source.height, next), ratio()));
       return;
     }
     const dx = (event.clientX - active.px) / scale();
@@ -215,12 +207,25 @@ export function ScanCropEditor(props: Props) {
     if (event.key === "ArrowDown") setPosition("y", y + distance);
   };
 
-  const boxStyle = () => ({
-    left: `${crop().x * scale()}px`,
-    top: `${crop().y * scale()}px`,
-    width: `${crop().width * scale()}px`,
-    height: `${crop().height * scale()}px`,
-  });
+  const boxStyle = () => {
+    const fitted = fitCrop();
+    if (crop().x === fitted.x && crop().y === fitted.y && crop().width === fitted.width && crop().height === fitted.height) {
+      const width = baseCrop().width * baseScale();
+      const height = baseCrop().height * baseScale();
+      return {
+        left: `${(canvasSize().width * scale() - width) / 2}px`,
+        top: `${(canvasSize().height * scale() - height) / 2}px`,
+        width: `${width}px`,
+        height: `${height}px`,
+      };
+    }
+    return {
+      left: `${crop().x * scale()}px`,
+      top: `${crop().y * scale()}px`,
+      width: `${crop().width * scale()}px`,
+      height: `${crop().height * scale()}px`,
+    };
+  };
   const valid = () =>
     crop().width >= 32 && crop().height >= 32 &&
     crop().x >= 0 && crop().y >= 0 &&
@@ -247,14 +252,17 @@ export function ScanCropEditor(props: Props) {
           </div>
         </div>
         <div class="crop-viewport" tabindex="0" onKeyDown={nudge} aria-label="Scan crop preview. Use arrow keys to move one source pixel.">
-          <div ref={canvasElement} class="crop-canvas" style={{ width: `${displayWidth()}px`, height: `${displayHeight()}px` }}>
+          <div ref={canvasElement} class="crop-canvas" style={{
+            width: `${displayWidth()}px`,
+            height: `${displayHeight()}px`,
+            transform: `translateY(${(props.source.height * baseScale() - displayHeight()) / 2}px)`,
+          }}>
             <div class="rotated-image" style={{
               width: `${props.source.width * scale()}px`,
               height: `${props.source.height * scale()}px`,
               transform: `translate(-50%, -50%) rotate(${angle()}deg)`,
             }}>
               <img src={props.source.data_url} alt="Selected calibration scan" draggable={false} />
-              {props.geometry && <SampleOverlay geometry={props.geometry} />}
             </div>
             <div
               class="crop-window"
@@ -264,15 +272,15 @@ export function ScanCropEditor(props: Props) {
               onPointerUp={endDrag}
               onPointerCancel={endDrag}
             >
+              {props.geometry && <SampleOverlay geometry={props.geometry} />}
               <button type="button" class="crop-handle" aria-label="Resize crop" disabled={props.busy}
                 onPointerDown={(event) => beginCropDrag(event, "resize")} onPointerMove={moveDrag}
                 onPointerUp={endDrag} onPointerCancel={endDrag} />
+              <button type="button" class="rotation-handle" aria-label="Rotate image" disabled={props.busy}
+                onPointerDown={beginRotate} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
+                ↻
+              </button>
             </div>
-            <button type="button" class="rotation-handle" aria-label="Rotate image" disabled={props.busy}
-              style={{ left: `${(crop().x + crop().width / 2) * scale()}px`, top: `${crop().y * scale()}px` }}
-              onPointerDown={beginRotate} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
-              ↻
-            </button>
           </div>
         </div>
         <div class="crop-fields-head">
