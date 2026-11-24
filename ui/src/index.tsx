@@ -59,10 +59,6 @@ const WORKING_LABEL: Record<string, string> = {
 
 const estimateMs = (kind: string, megapixels?: number) => {
   if (kind === "process") return Math.min(8000, 1500 + Math.max(0, (megapixels ?? 2) - 2) * 1000);
-  if (kind === "scan-source" || kind === "crop-import") return 1500;
-  if (kind === "gauge") return 800;
-  if (kind.startsWith("save-")) return 600;
-  if (kind === "archive-open" || kind === "archive-clear") return 400;
   return null;
 };
 
@@ -552,7 +548,7 @@ export default function App() {
     void run("crop-import", async () => {
       adopt(
         session.path
-          ? await bridge.importScanCrop(session.id, session.path, angle, crop.x, crop.y, crop.width, crop.height)
+          ? await bridge.importScanCrop(session.id, session.path, angle, crop.x, crop.y, crop.width, crop.height, crop.corners)
           : session.sourceMode === "original"
             ? await bridge.importScanCropSource(session.id, { ...crop, angle })
             : await bridge.importScanCropPreset(session.id, { ...crop, angle }),

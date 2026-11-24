@@ -39,6 +39,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   arrow-key nudges while the imported X/Y/W/H rectangle stays readable.
 - The crop frame can be dragged past the photo edge; the frame turns red and the
   missing area is imported as black.
+- Perspective correction in the scan editor: four draggable corners are warped
+  onto the gauge size, so a photo taken at an angle still yields a usable scan.
+- The crop settings are stored with the preset, so the **Original** source
+  reopens the untouched photo with the saved rotation, zoom, pan and corners.
+- The full-screen progress overlay is reserved for photo processing; loading a
+  scan or saving a crop now only disables the affected controls.
 - Creality Falcon2 Pro S 22W calibration instructions.
 
 ### Changed

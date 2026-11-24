@@ -292,6 +292,8 @@ pub struct ScanSource {
     pub width: u32,
     pub height: u32,
     pub data_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crop: Option<crate::presets::ScanCrop>,
 }
 
 #[tauri::command]
@@ -400,7 +402,26 @@ fn scan_source_path(path: &Path) -> Result<ScanSource, String> {
         width,
         height,
         data_url,
+        crop: None,
     })
+}
+
+fn scan_crop(
+    angle: Option<f64>,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+    corners: &Option<Vec<[f64; 2]>>,
+) -> crate::presets::ScanCrop {
+    crate::presets::ScanCrop {
+        angle: angle.unwrap_or_default(),
+        x,
+        y,
+        width,
+        height,
+        corners: corners.clone(),
+    }
 }
 
 fn preset_scan_path(store: &PresetStore, id: &str) -> Result<PathBuf, String> {
@@ -425,10 +446,20 @@ pub async fn scan_source_preset(host: State<'_, Host>, id: String) -> Result<Sca
 
 #[tauri::command]
 pub async fn scan_source_original(host: State<'_, Host>, id: String) -> Result<ScanSource, String> {
-    let inner = host.lock();
-    let path = original_scan_path(&inner.store, &id)?;
-    drop(inner);
-    scan_source_path(&path)
+    let (path, crop) = {
+        let inner = host.lock();
+        let path = original_scan_path(&inner.store, &id)?;
+        let crop = inner
+            .store
+            .presets()
+            .iter()
+            .find(|preset| preset.id == id)
+            .and_then(|preset| preset.scan_crop.clone());
+        (path, crop)
+    };
+    let mut source = scan_source_path(&path)?;
+    source.crop = crop;
+    Ok(source)
 }
 
 fn original_scan_path(store: &PresetStore, id: &str) -> Result<PathBuf, String> {
@@ -532,6 +563,75 @@ fn crop_with_padding(source: &RgbImage, x: i64, y: i64, width: u32, height: u32)
     out
 }
 
+fn warp_quad(
+    source: &RgbImage,
+    corners: &[[f64; 2]],
+    target_width: u32,
+    target_height: u32,
+) -> Result<RgbImage, String> {
+    if corners.len() != 4 || corners.iter().flatten().any(|value| !value.is_finite()) {
+        return Err("Perspective needs four finite corners.".into());
+    }
+    let (p0, p1, p2, p3) = (corners[0], corners[1], corners[2], corners[3]);
+    let area = (p0[0] * p1[1] - p1[0] * p0[1] + p1[0] * p2[1] - p2[0] * p1[1] + p2[0] * p3[1]
+        - p3[0] * p2[1]
+        + p3[0] * p0[1]
+        - p0[0] * p3[1])
+        / 2.0;
+    if area.abs() < 4.0 {
+        return Err("The perspective corners must form a usable quadrilateral.".into());
+    }
+    // Projective map from the unit square to the quad (Heckbert); its inverse
+    // maps every target pixel straight back onto the source image.
+    let dx1 = p1[0] - p2[0];
+    let dx2 = p3[0] - p2[0];
+    let dy1 = p1[1] - p2[1];
+    let dy2 = p3[1] - p2[1];
+    let sx = p0[0] - p1[0] + p2[0] - p3[0];
+    let sy = p0[1] - p1[1] + p2[1] - p3[1];
+    let den = dx1 * dy2 - dx2 * dy1;
+    if den.abs() < 1e-9 {
+        return Err("The perspective corners must form a usable quadrilateral.".into());
+    }
+    let g = (sx * dy2 - dx2 * sy) / den;
+    let h = (dx1 * sy - sx * dy1) / den;
+    let a = p1[0] - p0[0] + g * p1[0];
+    let b = p3[0] - p0[0] + h * p3[0];
+    let d = p1[1] - p0[1] + g * p1[1];
+    let e = p3[1] - p0[1] + h * p3[1];
+    let (width, height) = source.dimensions();
+    let max_x = width.saturating_sub(1) as f64;
+    let max_y = height.saturating_sub(1) as f64;
+    Ok(RgbImage::from_fn(target_width, target_height, |x, y| {
+        let u = (x as f64 + 0.5) / target_width as f64;
+        let v = (y as f64 + 0.5) / target_height as f64;
+        let divisor = g * u + h * v + 1.0;
+        if divisor.abs() < 1e-9 {
+            return image::Rgb([0, 0, 0]);
+        }
+        let source_x = (a * u + b * v + p0[0]) / divisor;
+        let source_y = (d * u + e * v + p0[1]) / divisor;
+        if !(0.0..=max_x).contains(&source_x) || !(0.0..=max_y).contains(&source_y) {
+            return image::Rgb([0, 0, 0]);
+        }
+        let x0 = source_x.floor() as u32;
+        let y0 = source_y.floor() as u32;
+        let x1 = (x0 + 1).min(width - 1);
+        let y1 = (y0 + 1).min(height - 1);
+        let tx = source_x - x0 as f64;
+        let ty = source_y - y0 as f64;
+        let p00 = source.get_pixel(x0, y0);
+        let p10 = source.get_pixel(x1, y0);
+        let p01 = source.get_pixel(x0, y1);
+        let p11 = source.get_pixel(x1, y1);
+        image::Rgb(std::array::from_fn(|channel| {
+            let top = p00[channel] as f64 * (1.0 - tx) + p10[channel] as f64 * tx;
+            let bottom = p01[channel] as f64 * (1.0 - tx) + p11[channel] as f64 * tx;
+            (top * (1.0 - ty) + bottom * ty).round() as u8
+        }))
+    }))
+}
+
 fn crop_bounds_error(
     width: i64,
     height: i64,
@@ -554,38 +654,66 @@ fn crop_bounds_error(
     None
 }
 
+enum CropShape<'a> {
+    Rect {
+        x: i64,
+        y: i64,
+        width: i64,
+        height: i64,
+    },
+    Quad(&'a [[f64; 2]]),
+}
+
+#[cfg(test)]
+fn rect_crop(x: i64, y: i64, width: i64, height: i64) -> CropShape<'static> {
+    CropShape::Rect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
 fn import_crop_to_store(
     store: &mut PresetStore,
     id: &str,
     path: &Path,
     angle: f64,
-    x: i64,
-    y: i64,
-    width: i64,
-    height: i64,
+    crop_shape: CropShape<'_>,
 ) -> Result<(), String> {
     let preset = store
         .presets()
         .iter()
         .find(|preset| preset.id == id)
         .ok_or_else(|| "Preset not found.".to_string())?;
-    if width < 32 || height < 32 {
-        return Err("Crop must be at least 32x32 pixels.".into());
-    }
-    let source = rotate_expand(&processing::load_rgb(path)?, angle)?;
-    let (source_width, source_height) = source.dimensions();
-    if let Some(error) = crop_bounds_error(width, height, x, y, source_width, source_height) {
-        return Err(error);
-    }
-    let crop = crop_with_padding(&source, x, y, width as u32, height as u32);
     let (target_width, target_height) = preset.calibration.dimensions()?;
-    // Triangle resampling matches the preview path's interpolation quality.
-    let resized = image::imageops::resize(
-        &crop,
-        target_width,
-        target_height,
-        image::imageops::FilterType::Triangle,
-    );
+    let source = rotate_expand(&processing::load_rgb(path)?, angle)?;
+    let resized = match crop_shape {
+        CropShape::Rect {
+            x,
+            y,
+            width,
+            height,
+        } => {
+            if width < 32 || height < 32 {
+                return Err("Crop must be at least 32x32 pixels.".into());
+            }
+            let (source_width, source_height) = source.dimensions();
+            if let Some(error) = crop_bounds_error(width, height, x, y, source_width, source_height)
+            {
+                return Err(error);
+            }
+            let crop = crop_with_padding(&source, x, y, width as u32, height as u32);
+            // Triangle resampling matches the preview path's interpolation quality.
+            image::imageops::resize(
+                &crop,
+                target_width,
+                target_height,
+                image::imageops::FilterType::Triangle,
+            )
+        }
+        CropShape::Quad(corners) => warp_quad(&source, corners, target_width, target_height)?,
+    };
     let archive_dir = store.archive_dir();
     let store_root = archive_dir
         .parent()
@@ -617,23 +745,31 @@ fn stage_preset_crop(
     target_width: u32,
     target_height: u32,
     angle: f64,
-    x: i64,
-    y: i64,
-    width: i64,
-    height: i64,
+    crop_shape: CropShape<'_>,
 ) -> Result<PathBuf, String> {
     let source = rotate_expand(&processing::load_rgb(source_path)?, angle)?;
-    let (source_width, source_height) = source.dimensions();
-    if let Some(error) = crop_bounds_error(width, height, x, y, source_width, source_height) {
-        return Err(error);
-    }
-    let crop = crop_with_padding(&source, x, y, width as u32, height as u32);
-    let resized = image::imageops::resize(
-        &crop,
-        target_width,
-        target_height,
-        image::imageops::FilterType::Triangle,
-    );
+    let resized = match crop_shape {
+        CropShape::Rect {
+            x,
+            y,
+            width,
+            height,
+        } => {
+            let (source_width, source_height) = source.dimensions();
+            if let Some(error) = crop_bounds_error(width, height, x, y, source_width, source_height)
+            {
+                return Err(error);
+            }
+            let crop = crop_with_padding(&source, x, y, width as u32, height as u32);
+            image::imageops::resize(
+                &crop,
+                target_width,
+                target_height,
+                image::imageops::FilterType::Triangle,
+            )
+        }
+        CropShape::Quad(corners) => warp_quad(&source, corners, target_width, target_height)?,
+    };
     let staging = store_root.join(format!(
         "crop-{}-{}.png",
         std::time::SystemTime::now()
@@ -783,6 +919,7 @@ pub fn save_preset(host: State<'_, Host>, preset: UiPreset) -> Result<UiState, S
         dpi: preset.dpi,
         calibration_photo: existing.calibration_photo.clone(),
         scan_source_photo: existing.scan_source_photo.clone(),
+        scan_crop: existing.scan_crop.clone(),
     };
     if let Err(error) = inner.store.update(updated) {
         return Err(host.fail(&mut inner, error.to_string()));
@@ -826,6 +963,24 @@ pub async fn import_scan(
     Ok(host.publish(&mut inner))
 }
 
+fn crop_shape<'a>(
+    corners: &'a Option<Vec<[f64; 2]>>,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+) -> CropShape<'a> {
+    match corners.as_deref() {
+        Some(points) => CropShape::Quad(points),
+        None => CropShape::Rect {
+            x,
+            y,
+            width,
+            height,
+        },
+    }
+}
+
 #[tauri::command]
 pub async fn import_scan_crop(
     host: State<'_, Host>,
@@ -836,6 +991,7 @@ pub async fn import_scan_crop(
     y: i64,
     width: i64,
     height: i64,
+    corners: Option<Vec<[f64; 2]>>,
 ) -> Result<UiState, String> {
     let mut inner = host.lock();
     guard_busy(&inner)?;
@@ -845,10 +1001,7 @@ pub async fn import_scan_crop(
         &id,
         Path::new(&path),
         angle.unwrap_or_default(),
-        x,
-        y,
-        width,
-        height,
+        crop_shape(&corners, x, y, width, height),
     );
     if let Err(error) = result {
         return Err(host.fail(&mut inner, error));
@@ -869,6 +1022,7 @@ pub async fn import_scan_crop_preset(
     y: i64,
     width: i64,
     height: i64,
+    corners: Option<Vec<[f64; 2]>>,
 ) -> Result<UiState, String> {
     let (source_path, store_root, target_width, target_height) = {
         let mut inner = host.lock();
@@ -909,10 +1063,7 @@ pub async fn import_scan_crop_preset(
         target_width,
         target_height,
         angle.unwrap_or_default(),
-        x,
-        y,
-        width,
-        height,
+        crop_shape(&corners, x, y, width, height),
     ) {
         Ok(path) => path,
         Err(error) => {
@@ -929,6 +1080,9 @@ pub async fn import_scan_crop_preset(
     if let Err(error) = imported {
         return Err(host.fail(&mut inner, error));
     }
+    let _ = inner
+        .store
+        .set_scan_crop(&id, Some(scan_crop(angle, x, y, width, height, &corners)));
     inner.cache.clear();
     inner.previews.clear();
     inner.status = "Calibration scan updated".to_string();
@@ -944,6 +1098,7 @@ pub async fn import_scan_crop_source(
     y: i64,
     width: i64,
     height: i64,
+    corners: Option<Vec<[f64; 2]>>,
 ) -> Result<UiState, String> {
     let (source_path, store_root, target_width, target_height) = {
         let mut inner = host.lock();
@@ -987,10 +1142,7 @@ pub async fn import_scan_crop_source(
         target_width,
         target_height,
         angle.unwrap_or_default(),
-        x,
-        y,
-        width,
-        height,
+        crop_shape(&corners, x, y, width, height),
     ) {
         Ok(path) => path,
         Err(error) => {
@@ -1007,6 +1159,9 @@ pub async fn import_scan_crop_source(
     if let Err(error) = imported {
         return Err(host.fail(&mut inner, error));
     }
+    let _ = inner
+        .store
+        .set_scan_crop(&id, Some(scan_crop(angle, x, y, width, height, &corners)));
     inner.cache.clear();
     inner.previews.clear();
     inner.status = "Calibration scan updated".to_string();
@@ -1461,7 +1616,14 @@ mod tests {
         let picked_path = root.join("picked.png");
         picked.save(&picked_path).unwrap();
         let picked_bytes = std::fs::read(&picked_path).unwrap();
-        import_crop_to_store(&mut store, &id, &picked_path, 0.0, 40, 30, 64, 64).unwrap();
+        import_crop_to_store(
+            &mut store,
+            &id,
+            &picked_path,
+            0.0,
+            rect_crop(40, 30, 64, 64),
+        )
+        .unwrap();
         store.keep_scan_source(&id, &picked_path).unwrap();
         let preset = store
             .presets()
@@ -1487,10 +1649,7 @@ mod tests {
             target_width,
             target_height,
             0.0,
-            0,
-            0,
-            64,
-            64,
+            rect_crop(0, 0, 64, 64),
         )
         .unwrap();
         store.import_calibration_photo(&id, &staging).unwrap();
@@ -1546,7 +1705,14 @@ mod tests {
         });
         let source_path = root.join("large-source.png");
         source.save(&source_path).unwrap();
-        import_crop_to_store(&mut store, &id, &source_path, 0.0, 40, 30, 64, 64).unwrap();
+        import_crop_to_store(
+            &mut store,
+            &id,
+            &source_path,
+            0.0,
+            rect_crop(40, 30, 64, 64),
+        )
+        .unwrap();
         let preset = store
             .presets()
             .iter()
@@ -1562,11 +1728,19 @@ mod tests {
         let initial_bytes = std::fs::read(&managed).unwrap();
 
         assert_eq!(
-            import_crop_to_store(&mut store, &id, &source_path, 0.0, 400, 400, 32, 32).unwrap_err(),
+            import_crop_to_store(
+                &mut store,
+                &id,
+                &source_path,
+                0.0,
+                rect_crop(400, 400, 32, 32)
+            )
+            .unwrap_err(),
             "Crop does not overlap the image."
         );
         assert_eq!(
-            import_crop_to_store(&mut store, &id, &source_path, 0.0, 0, 0, 16, 16).unwrap_err(),
+            import_crop_to_store(&mut store, &id, &source_path, 0.0, rect_crop(0, 0, 16, 16))
+                .unwrap_err(),
             "Crop must be at least 32x32 pixels."
         );
         assert_eq!(
@@ -1586,6 +1760,37 @@ mod tests {
     }
 
     #[test]
+    fn warp_quad_maps_an_upright_quad_one_to_one() {
+        let source = RgbImage::from_pixel(64, 64, image::Rgb([200, 100, 50]));
+        let corners = [[0.0, 0.0], [64.0, 0.0], [64.0, 64.0], [0.0, 64.0]];
+        let warped = warp_quad(&source, &corners, 32, 32).unwrap();
+        assert_eq!(warped.dimensions(), (32, 32));
+        assert_eq!(warped.get_pixel(16, 16), &image::Rgb([200, 100, 50]));
+    }
+
+    #[test]
+    fn warp_quad_fills_the_area_outside_the_photo_with_black() {
+        let source = RgbImage::from_pixel(64, 64, image::Rgb([255, 255, 255]));
+        let corners = [
+            [100.0, 100.0],
+            [164.0, 100.0],
+            [164.0, 164.0],
+            [100.0, 164.0],
+        ];
+        let warped = warp_quad(&source, &corners, 16, 16).unwrap();
+        assert_eq!(warped.get_pixel(8, 8), &image::Rgb([0, 0, 0]));
+    }
+
+    #[test]
+    fn warp_quad_rejects_degenerate_or_non_finite_corners() {
+        let source = RgbImage::from_pixel(64, 64, image::Rgb([255, 255, 255]));
+        let folded = [[10.0, 10.0], [10.0, 10.0], [10.0, 10.0], [10.0, 10.0]];
+        assert!(warp_quad(&source, &folded, 16, 16).is_err());
+        let not_finite = [[0.0, 0.0], [f64::NAN, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        assert!(warp_quad(&source, &not_finite, 16, 16).is_err());
+    }
+
+    #[test]
     fn crop_outside_pads_with_black() {
         let root = temp_root();
         let mut store = PresetStore::open(&root).unwrap();
@@ -1601,7 +1806,14 @@ mod tests {
         RgbImage::from_pixel(64, 64, image::Rgb([255, 255, 255]))
             .save(&source_path)
             .unwrap();
-        import_crop_to_store(&mut store, &id, &source_path, 0.0, 48, 48, 32, 32).unwrap();
+        import_crop_to_store(
+            &mut store,
+            &id,
+            &source_path,
+            0.0,
+            rect_crop(48, 48, 32, 32),
+        )
+        .unwrap();
         let managed = store.scan_path(&store.presets()[0]).unwrap();
         let scan = processing::load_rgb(&managed).unwrap();
         assert_eq!(scan.dimensions(), (64, 64));
@@ -1645,10 +1857,7 @@ mod tests {
             target_width,
             target_height,
             0.0,
-            0,
-            0,
-            64,
-            64,
+            rect_crop(0, 0, 64, 64),
         )
         .unwrap();
         store.import_calibration_photo(&id, &staging).unwrap();
@@ -1679,10 +1888,7 @@ mod tests {
             target_width,
             target_height,
             0.0,
-            1000,
-            1000,
-            32,
-            32,
+            rect_crop(1000, 1000, 32, 32),
         )
         .unwrap_err();
         assert_eq!(error, "Crop does not overlap the image.");
@@ -1725,10 +1931,7 @@ mod tests {
             target_width,
             target_height,
             0.0,
-            0,
-            0,
-            160,
-            120,
+            rect_crop(0, 0, 160, 120),
         )
         .unwrap();
         store.import_calibration_photo(&id, &staging).unwrap();
@@ -1748,10 +1951,7 @@ mod tests {
             target_width,
             target_height,
             0.0,
-            400,
-            400,
-            32,
-            32,
+            rect_crop(400, 400, 32, 32),
         )
         .unwrap_err();
         assert_eq!(error, "Crop does not overlap the image.");
@@ -1790,11 +1990,18 @@ mod tests {
         let old_bytes = std::fs::read(&managed).unwrap();
 
         assert_eq!(
-            import_crop_to_store(&mut store, &id, &source_path, 200.0, 0, 0, 64, 64).unwrap_err(),
+            import_crop_to_store(
+                &mut store,
+                &id,
+                &source_path,
+                200.0,
+                rect_crop(0, 0, 64, 64)
+            )
+            .unwrap_err(),
             "rotation must be between -180 and 180 degrees"
         );
         assert_eq!(std::fs::read(&managed).unwrap(), old_bytes);
-        import_crop_to_store(&mut store, &id, &source_path, 45.0, 0, 0, 91, 91).unwrap();
+        import_crop_to_store(&mut store, &id, &source_path, 45.0, rect_crop(0, 0, 91, 91)).unwrap();
         assert_eq!(
             processing::load_rgb(&store.scan_path(&store.presets()[0]).unwrap())
                 .unwrap()

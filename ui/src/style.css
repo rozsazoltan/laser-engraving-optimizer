@@ -1744,6 +1744,39 @@ select.input {
   opacity: 0.4;
 }
 
+.quad-outline {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+.quad-outline polygon {
+  fill: rgba(77, 163, 255, 0.08);
+  stroke: #4da3ff;
+  stroke-width: 2;
+}
+.quad-handle {
+  position: absolute;
+  z-index: 6;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 2px solid #4da3ff;
+  border-radius: 50%;
+  background: rgba(22, 22, 22, 0.85);
+  transform: translate(-50%, -50%);
+  cursor: grab;
+  touch-action: none;
+}
+.quad-handle:hover {
+  background: #4da3ff;
+}
+.crop-toolbar > .btn.active {
+  border-color: #4da3ff;
+  color: #4da3ff;
+}
+
 .crop-fields > label {
   display: grid;
   min-width: 0;

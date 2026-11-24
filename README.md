@@ -104,9 +104,14 @@ exact angle, zoom with the `+` and `−` buttons or the ruler handle, and nudge 
 with the arrow keys (one source pixel, `Shift` plus arrow for ten). The X/Y/W/H
 readout shows the source rectangle that will be imported, and the same sampled
 pixels stay visible inside the frame. The frame may be dragged past the edge of
-the photo; the frame turns red, and the missing area is imported as black. The
-crop is rescaled to the gauge size on import, so the result always matches the
-preset geometry.
+the photo; the frame turns red, and the missing area is imported as black.
+If the photo was taken at an angle, switch on **Perspective** and drag the four
+blue corners onto the corners of the engraved gauge; the quadrilateral is
+straightened to the gauge size, so the perspective is corrected in the same step.
+The crop is rescaled to the gauge size on import, so the result always matches the
+preset geometry. The crop settings are stored with the preset, so **Original**
+reopens the untouched photo with the rotation, zoom, pan and perspective corners
+that were used when the current scan was saved.
 
 Presets and managed scans are stored in
 `%LOCALAPPDATA%\LaserEngravingOptimizer`. Back up that entire directory to retain

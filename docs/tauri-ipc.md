@@ -120,8 +120,8 @@ event with the same payload. Rejections are plain strings.
 | `scan_geometry` | `id` | Returns `ScanGeometry` for the preset's gauge: pixel size plus every sampled region in gauge coordinates. Needs no stored scan. |
 | `scan_source` | `path` | Returns `ScanSource` for an image the user picked: real pixel size and a PNG data URL preview. Used by the crop editor before importing. |
 | `scan_source_preset` | `id` | Returns `ScanSource` for the preset's already-saved managed scan, so the crop editor can re-open and refine it. Rejects presets without a scan. |
-| `import_scan_crop` | `id`, `path`, `x`, `y`, `width`, `height` | Imports the integer crop of the picked image, rescaled to the preset's exact gauge size, as the managed scan. The crop may extend past the source; the missing area is filled with black. Rejects a crop with no overlap and one smaller than 32x32. |
-| `import_scan_crop_preset` | `id`, `x`, `y`, `width`, `height` | Crops the preset's already-saved managed scan and resaves the result at the exact gauge size, archiving the previous copy. Used by the editor's edit mode. |
+| `import_scan_crop` | `id`, `path`, `x`, `y`, `width`, `height`, `angle`, `corners?` | Imports the integer crop of the picked image, rescaled to the preset's exact gauge size, as the managed scan. The crop may extend past the source; the missing area is filled with black. Rejects a crop with no overlap and one smaller than 32x32. `corners` replaces the crop rectangle with a perspective warp. |
+| `import_scan_crop_preset` | `id`, `x`, `y`, `width`, `height`, `angle`, `corners?` | Crops the preset's already-saved managed scan and resaves the result at the exact gauge size, archiving the previous copy. Used by the editor's edit mode. |
 | `open_scan_archive` | — | Opens the archived-scan folder in the OS file manager. |
 | `clear_scan_archive` | — | Empties the archived-scan folder. |
 
@@ -147,13 +147,19 @@ ScanGeometry = {
   }>
 }
 Rect = { x: number, y: number, width: number, height: number }
-ScanSource = { width: number, height: number, data_url: string }
+ScanCrop = { angle: number, x: number, y: number, width: number, height: number, corners?: [number, number][] | null }
+ScanSource = { width: number, height: number, data_url: string, crop?: ScanCrop | null }
 ```
 
 `ScanGeometry` is expressed in gauge pixels, so the UI can draw the overlay on both
 the stored scan and the generated gauge at any display scale. `scan_source` returns
 the real pixel size of the picked file plus a bounded preview (long edge ≤ 1600 px)
 so the crop editor can map display coordinates to source pixels exactly.
+
+All three crop commands store the applied `ScanCrop` on the preset, and
+`scan_source_original` returns it in `crop`, so the editor can reopen the original
+photo with exactly the rotation, frame and perspective that produced the stored
+scan.
 
 The crop editor moves by whole source pixels: arrow keys nudge the crop by 1 source
 pixel, and the overlay of `ScanGeometry` is drawn inside the crop rectangle at the
@@ -281,3 +287,7 @@ an empty app.
 ### Rotation
 
 The three crop commands take an `angle` argument (degrees, -180..180, default 0). The image is rotated about its centre first and the canvas grows to the rotated bounding box: `w' = max(1, ceil(w*|cos| + h*|sin|))`, `h' = max(1, ceil(w*|sin| + h*|cos|))`, with trig values within 1e-12 of zero snapped to zero. The crop rectangle is expressed in that rotated canvas space, so the UI mirrors the same formula. Pixels outside the source use the nearest edge pixel.
+
+### Perspective
+
+The same three crop commands accept an optional `corners` array of four `[x, y]` points in the rotated canvas space, ordered top-left, top-right, bottom-right, bottom-left. When present, the corners replace the crop rectangle: the quadrilateral is warped projectively onto the preset's exact gauge size, so a photo taken at an angle can be straightened. Corners must be finite and enclose at least 4 px². Pixels that map outside the source are filled with black, matching the crop path.

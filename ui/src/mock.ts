@@ -1,4 +1,4 @@
-import { DEFAULT_CALIBRATION, DEFAULT_PROCESSING, presetKey, type Laser, type Preset, type PresetPreview, type ProcessResult, type ScanGeometry, type ScanSource, type State } from "./types";
+import { DEFAULT_CALIBRATION, DEFAULT_PROCESSING, presetKey, type Laser, type Preset, type PresetPreview, type ProcessResult, type ScanCrop, type ScanGeometry, type ScanSource, type State } from "./types";
 
 /**
  * Browser-only stand-in for the Tauri host, used by `pnpm dev` so the UI can be
@@ -168,8 +168,19 @@ const rotatedSize = (width: number, height: number, angle: number) => {
     height: Math.max(1, Math.ceil(width * sine + height * cosine)),
   };
 };
+const quadError = (corners: unknown[]): string | null => {
+  if (corners.length !== 4) return "Perspective needs four corners.";
+  const points = corners.map((point) => Array.isArray(point) ? point.map(Number) : []);
+  if (points.some((point) => point.length !== 2 || !point.every(Number.isFinite))) {
+    return "Perspective needs four finite corners.";
+  }
+  const [[p0x, p0y], [p1x, p1y], [p2x, p2y], [p3x, p3y]] = points as number[][];
+  const area = Math.abs((p0x * p1y - p1x * p0y + p1x * p2y - p2x * p1y + p2x * p3y - p3x * p2y + p3x * p0y - p0x * p3y) / 2);
+  return area < 4 ? "The perspective corners must form a usable quadrilateral." : null;
+};
 const managedScans = new Map<string, ScanSource>();
 const originalScans = new Map<string, ScanSource>();
+const savedCrops = new Map<string, ScanCrop>();
 for (const item of presets.filter((entry) => entry.has_scan)) {
   managedScans.set(item.id, scanSource("Current scan", 2400, 2400));
   originalScans.set(item.id, scanSource("Original scan", 3200, 2400));
@@ -381,7 +392,7 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
       const match = presetOf(String(args?.id ?? ""));
       if (!match.has_scan) throw "This preset has no calibration scan.";
       const current = managedScans.get(match.id) ?? scanSource("Current scan", 2400, 2400);
-      return (originalScans.get(match.id) ?? current) as T;
+      return { ...(originalScans.get(match.id) ?? current), crop: savedCrops.get(match.id) ?? null } as T;
     }
 
     case "import_scan_crop": {
@@ -398,10 +409,15 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
       const width = Number(args?.width);
       const height = Number(args?.height);
       if (!SCAN_EXTENSIONS.includes(extensionOf(path))) throw "Calibration scan must be a PNG or JPEG image.";
-      if (![x, y, width, height].every(Number.isInteger) || width < 32 || height < 32 || x >= canvas.width || y >= canvas.height || x + width <= 0 || y + height <= 0) {
+      const corners = Array.isArray(args?.corners) ? args.corners : null;
+      if (corners) {
+        const problem = quadError(corners);
+        if (problem) throw problem;
+      } else if (![x, y, width, height].every(Number.isInteger) || width < 32 || height < 32 || x >= canvas.width || y >= canvas.height || x + width <= 0 || y + height <= 0) {
         throw "The crop must be at least 32 × 32 px and overlap the image.";
       }
       presets = presets.map((item) => item.id === id ? { ...item, has_scan: true } : item);
+      savedCrops.set(id, { angle, x, y, width, height, corners: (corners as [number, number][] | null) ?? null });
       managedScans.set(id, scanSource("Current scan", match.calibration.block_size * match.calibration.columns, match.calibration.block_size * match.calibration.rows));
       if (!originalScans.has(id)) originalScans.set(id, scanSource("Original scan", sourceWidth, sourceHeight));
       cache.clear();
@@ -419,9 +435,14 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
       if (!Number.isFinite(angle) || angle < -180 || angle > 180) throw "Rotation must be between -180 and 180 degrees.";
       const canvas = rotatedSize(source.width, source.height, angle);
       const x = Number(args?.x), y = Number(args?.y), width = Number(args?.width), height = Number(args?.height);
-      if (![x, y, width, height].every(Number.isInteger) || width < 32 || height < 32 || x >= canvas.width || y >= canvas.height || x + width <= 0 || y + height <= 0) {
+      const corners = Array.isArray(args?.corners) ? args.corners : null;
+      if (corners) {
+        const problem = quadError(corners);
+        if (problem) throw problem;
+      } else if (![x, y, width, height].every(Number.isInteger) || width < 32 || height < 32 || x >= canvas.width || y >= canvas.height || x + width <= 0 || y + height <= 0) {
         throw "The crop must be at least 32 × 32 px and overlap the image.";
       }
+      savedCrops.set(id, { angle, x, y, width, height, corners: (corners as [number, number][] | null) ?? null });
       managedScans.set(id, scanSource("Current scan", match.calibration.block_size * match.calibration.columns, match.calibration.block_size * match.calibration.rows));
       cache.clear();
       status = `Calibration scan imported for “${match.name}”`;
@@ -439,9 +460,14 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
       if (!Number.isFinite(angle) || angle < -180 || angle > 180) throw "Rotation must be between -180 and 180 degrees.";
       const canvas = rotatedSize(source.width, source.height, angle);
       const x = Number(args?.x), y = Number(args?.y), width = Number(args?.width), height = Number(args?.height);
-      if (![x, y, width, height].every(Number.isInteger) || width < 32 || height < 32 || x >= canvas.width || y >= canvas.height || x + width <= 0 || y + height <= 0) {
+      const corners = Array.isArray(args?.corners) ? args.corners : null;
+      if (corners) {
+        const problem = quadError(corners);
+        if (problem) throw problem;
+      } else if (![x, y, width, height].every(Number.isInteger) || width < 32 || height < 32 || x >= canvas.width || y >= canvas.height || x + width <= 0 || y + height <= 0) {
         throw "The crop must be at least 32 × 32 px and overlap the image.";
       }
+      savedCrops.set(id, { angle, x, y, width, height, corners: (corners as [number, number][] | null) ?? null });
       managedScans.set(id, scanSource("Current scan", match.calibration.block_size * match.calibration.columns, match.calibration.block_size * match.calibration.rows));
       cache.clear();
       status = `Calibration scan imported for “${match.name}”`;

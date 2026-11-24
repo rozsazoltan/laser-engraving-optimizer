@@ -23,6 +23,17 @@ pub struct Laser {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ScanCrop {
+    pub angle: f64,
+    pub x: i64,
+    pub y: i64,
+    pub width: i64,
+    pub height: i64,
+    #[serde(default)]
+    pub corners: Option<Vec<[f64; 2]>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Preset {
     pub id: String,
     pub laser_id: String,
@@ -43,6 +54,8 @@ pub struct Preset {
     pub calibration_photo: Option<String>,
     #[serde(default)]
     pub scan_source_photo: Option<String>,
+    #[serde(default)]
+    pub scan_crop: Option<ScanCrop>,
 }
 
 impl Preset {
@@ -59,6 +72,7 @@ impl Preset {
             dpi: 0.0,
             calibration_photo: None,
             scan_source_photo: None,
+            scan_crop: None,
         }
     }
 }
@@ -116,6 +130,7 @@ impl LegacyPreset {
             dpi: 0.0,
             calibration_photo: self.calibration_photo,
             scan_source_photo: None,
+            scan_crop: None,
         }
     }
 }
@@ -529,6 +544,25 @@ impl PresetStore {
         }
         if let Some(old_photo) = old_photo {
             self.archive_managed_scan(&preset_name, &old_photo);
+        }
+        Ok(())
+    }
+
+    pub fn set_scan_crop(&mut self, id: &str, crop: Option<ScanCrop>) -> Result<()> {
+        let previous = {
+            let preset = self
+                .store
+                .presets
+                .iter_mut()
+                .find(|p| p.id == id)
+                .ok_or_else(|| PresetError::Invalid("preset does not exist".into()))?;
+            std::mem::replace(&mut preset.scan_crop, crop)
+        };
+        if let Err(e) = self.save() {
+            if let Some(preset) = self.store.presets.iter_mut().find(|p| p.id == id) {
+                preset.scan_crop = previous;
+            }
+            return Err(e);
         }
         Ok(())
     }
