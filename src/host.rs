@@ -325,6 +325,65 @@ fn build_scan_geometry(spec: &GridCalibrationSpecification) -> Result<ScanGeomet
     })
 }
 
+fn rotate_expand(image: &RgbImage, angle_deg: f64) -> Result<RgbImage, String> {
+    if !angle_deg.is_finite() || !(-180.0..=180.0).contains(&angle_deg) {
+        return Err("rotation must be between -180 and 180 degrees".into());
+    }
+    let mut angle = angle_deg % 360.0;
+    if angle <= -180.0 {
+        angle += 360.0;
+    } else if angle > 180.0 {
+        angle -= 360.0;
+    }
+    if angle.abs() < 1e-9 {
+        return Ok(image.clone());
+    }
+
+    let radians = angle.to_radians();
+    let clean_trig = |value: f64| if value.abs() < 1e-12 { 0.0 } else { value };
+    let cos = clean_trig(radians.cos());
+    let sin = clean_trig(radians.sin());
+    let (width, height) = image.dimensions();
+    let expanded_width = ((width as f64 * cos.abs() + height as f64 * sin.abs()).ceil()).max(1.0);
+    let expanded_height = ((width as f64 * sin.abs() + height as f64 * cos.abs()).ceil()).max(1.0);
+    if expanded_width > crate::calibration::MAX_DIMENSION as f64
+        || expanded_height > crate::calibration::MAX_DIMENSION as f64
+        || expanded_width * expanded_height > crate::calibration::MAX_PIXELS as f64
+    {
+        return Err("Rotated image dimensions exceed safe limits.".into());
+    }
+    let out_width = expanded_width as u32;
+    let out_height = expanded_height as u32;
+    let source_center_x = width as f64 / 2.0;
+    let source_center_y = height as f64 / 2.0;
+    let output_center_x = out_width as f64 / 2.0;
+    let output_center_y = out_height as f64 / 2.0;
+
+    Ok(RgbImage::from_fn(out_width, out_height, |x, y| {
+        let dx = x as f64 + 0.5 - output_center_x;
+        let dy = y as f64 + 0.5 - output_center_y;
+        let source_x = (cos * dx + sin * dy + source_center_x - 0.5)
+            .clamp(0.0, width.saturating_sub(1) as f64);
+        let source_y = (-sin * dx + cos * dy + source_center_y - 0.5)
+            .clamp(0.0, height.saturating_sub(1) as f64);
+        let x0 = source_x.floor() as u32;
+        let y0 = source_y.floor() as u32;
+        let x1 = (x0 + 1).min(width - 1);
+        let y1 = (y0 + 1).min(height - 1);
+        let tx = source_x - x0 as f64;
+        let ty = source_y - y0 as f64;
+        let p00 = image.get_pixel(x0, y0);
+        let p10 = image.get_pixel(x1, y0);
+        let p01 = image.get_pixel(x0, y1);
+        let p11 = image.get_pixel(x1, y1);
+        image::Rgb(std::array::from_fn(|channel| {
+            let top = p00[channel] as f64 * (1.0 - tx) + p10[channel] as f64 * tx;
+            let bottom = p01[channel] as f64 * (1.0 - tx) + p11[channel] as f64 * tx;
+            (top * (1.0 - ty) + bottom * ty).round() as u8
+        }))
+    }))
+}
+
 #[tauri::command]
 pub async fn scan_source(host: State<'_, Host>, path: String) -> Result<ScanSource, String> {
     let _inner = host.lock();
@@ -462,6 +521,7 @@ fn import_crop_to_store(
     store: &mut PresetStore,
     id: &str,
     path: &Path,
+    angle: f64,
     x: i64,
     y: i64,
     width: i64,
@@ -475,7 +535,7 @@ fn import_crop_to_store(
     if width < 32 || height < 32 {
         return Err("Crop must be at least 32x32 pixels.".into());
     }
-    let source = processing::load_rgb(path)?;
+    let source = rotate_expand(&processing::load_rgb(path)?, angle)?;
     let (source_width, source_height) = source.dimensions();
     if x < 0
         || y < 0
@@ -526,12 +586,13 @@ fn stage_preset_crop(
     store_root: &Path,
     target_width: u32,
     target_height: u32,
+    angle: f64,
     x: i64,
     y: i64,
     width: i64,
     height: i64,
 ) -> Result<PathBuf, String> {
-    let source = processing::load_rgb(&source_path)?;
+    let source = rotate_expand(&processing::load_rgb(source_path)?, angle)?;
     let (source_width, source_height) = source.dimensions();
     if width < 32 || height < 32 {
         return Err("Crop must be at least 32x32 pixels.".into());
@@ -750,6 +811,7 @@ pub async fn import_scan_crop(
     host: State<'_, Host>,
     id: String,
     path: String,
+    angle: Option<f64>,
     x: i64,
     y: i64,
     width: i64,
@@ -758,7 +820,16 @@ pub async fn import_scan_crop(
     let mut inner = host.lock();
     guard_busy(&inner)?;
     inner.error = None;
-    let result = import_crop_to_store(&mut inner.store, &id, Path::new(&path), x, y, width, height);
+    let result = import_crop_to_store(
+        &mut inner.store,
+        &id,
+        Path::new(&path),
+        angle.unwrap_or_default(),
+        x,
+        y,
+        width,
+        height,
+    );
     if let Err(error) = result {
         return Err(host.fail(&mut inner, error));
     }
@@ -773,6 +844,7 @@ pub async fn import_scan_crop(
 pub async fn import_scan_crop_preset(
     host: State<'_, Host>,
     id: String,
+    angle: Option<f64>,
     x: i64,
     y: i64,
     width: i64,
@@ -816,6 +888,7 @@ pub async fn import_scan_crop_preset(
         &store_root,
         target_width,
         target_height,
+        angle.unwrap_or_default(),
         x,
         y,
         width,
@@ -846,6 +919,7 @@ pub async fn import_scan_crop_preset(
 pub async fn import_scan_crop_source(
     host: State<'_, Host>,
     id: String,
+    angle: Option<f64>,
     x: i64,
     y: i64,
     width: i64,
@@ -892,6 +966,7 @@ pub async fn import_scan_crop_source(
         &store_root,
         target_width,
         target_height,
+        angle.unwrap_or_default(),
         x,
         y,
         width,
@@ -1366,7 +1441,7 @@ mod tests {
         let picked_path = root.join("picked.png");
         picked.save(&picked_path).unwrap();
         let picked_bytes = std::fs::read(&picked_path).unwrap();
-        import_crop_to_store(&mut store, &id, &picked_path, 40, 30, 64, 64).unwrap();
+        import_crop_to_store(&mut store, &id, &picked_path, 0.0, 40, 30, 64, 64).unwrap();
         store.keep_scan_source(&id, &picked_path).unwrap();
         let preset = store
             .presets()
@@ -1391,6 +1466,7 @@ mod tests {
             &store_root,
             target_width,
             target_height,
+            0.0,
             0,
             0,
             64,
@@ -1450,7 +1526,7 @@ mod tests {
         });
         let source_path = root.join("large-source.png");
         source.save(&source_path).unwrap();
-        import_crop_to_store(&mut store, &id, &source_path, 40, 30, 64, 64).unwrap();
+        import_crop_to_store(&mut store, &id, &source_path, 0.0, 40, 30, 64, 64).unwrap();
         let preset = store
             .presets()
             .iter()
@@ -1466,11 +1542,11 @@ mod tests {
         let initial_bytes = std::fs::read(&managed).unwrap();
 
         assert_eq!(
-            import_crop_to_store(&mut store, &id, &source_path, 180, 150, 32, 32).unwrap_err(),
+            import_crop_to_store(&mut store, &id, &source_path, 0.0, 180, 150, 32, 32).unwrap_err(),
             "Crop is outside the image."
         );
         assert_eq!(
-            import_crop_to_store(&mut store, &id, &source_path, 0, 0, 16, 16).unwrap_err(),
+            import_crop_to_store(&mut store, &id, &source_path, 0.0, 0, 0, 16, 16).unwrap_err(),
             "Crop must be at least 32x32 pixels."
         );
         assert_eq!(
@@ -1523,6 +1599,7 @@ mod tests {
             &store_root,
             target_width,
             target_height,
+            0.0,
             0,
             0,
             64,
@@ -1556,6 +1633,7 @@ mod tests {
             &store_root,
             target_width,
             target_height,
+            0.0,
             40,
             40,
             32,
@@ -1601,6 +1679,7 @@ mod tests {
             &store_root,
             target_width,
             target_height,
+            0.0,
             0,
             0,
             160,
@@ -1623,6 +1702,7 @@ mod tests {
             &store_root,
             target_width,
             target_height,
+            0.0,
             140,
             100,
             32,
@@ -1635,6 +1715,47 @@ mod tests {
             managed_bytes
         );
         assert_eq!(std::fs::read(&original_path).unwrap(), original_bytes);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rotation_expands_canvas_and_rotated_crop_imports() {
+        let square = RgbImage::from_fn(64, 64, |x, y| image::Rgb([x as u8, y as u8, 120]));
+        assert_eq!(rotate_expand(&square, 0.0).unwrap(), square);
+        assert_eq!(rotate_expand(&square, 90.0).unwrap().dimensions(), (64, 64));
+        let wide = RgbImage::from_pixel(128, 64, image::Rgb([170, 170, 170]));
+        assert_eq!(rotate_expand(&wide, 90.0).unwrap().dimensions(), (64, 128));
+        assert_eq!(rotate_expand(&square, 45.0).unwrap().dimensions(), (91, 91));
+
+        let root = temp_root();
+        let mut store = PresetStore::open(&root).unwrap();
+        let laser_id = store.add_laser("Laser", 40.0).unwrap().id.clone();
+        let mut preset = Preset::new("Rotated crop", &laser_id);
+        preset.calibration.block_size = 32;
+        preset.calibration.rows = 2;
+        preset.calibration.columns = 2;
+        let id = preset.id.clone();
+        store.add(preset).unwrap();
+        let source_path = root.join("source.png");
+        square.save(&source_path).unwrap();
+        let previous = root.join("previous.png");
+        square.save(&previous).unwrap();
+        store.import_calibration_photo(&id, previous).unwrap();
+        let managed = store.scan_path(&store.presets()[0]).unwrap();
+        let old_bytes = std::fs::read(&managed).unwrap();
+
+        assert_eq!(
+            import_crop_to_store(&mut store, &id, &source_path, 200.0, 0, 0, 64, 64).unwrap_err(),
+            "rotation must be between -180 and 180 degrees"
+        );
+        assert_eq!(std::fs::read(&managed).unwrap(), old_bytes);
+        import_crop_to_store(&mut store, &id, &source_path, 45.0, 0, 0, 91, 91).unwrap();
+        assert_eq!(
+            processing::load_rgb(&store.scan_path(&store.presets()[0]).unwrap())
+                .unwrap()
+                .dimensions(),
+            (64, 64)
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

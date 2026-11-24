@@ -1443,11 +1443,20 @@ select.input {
   }
 }
 
-.crop-canvas > img {
+.rotated-image {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform-origin: center;
+}
+.rotated-image > img,
+.rotated-image > .sample-overlay {
   display: block;
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: fill;
+  user-select: none;
 }
 
 .sample-overlay {
@@ -1577,12 +1586,6 @@ select.input {
   margin: 0 auto;
 }
 
-.crop-canvas > img {
-  position: absolute;
-  inset: 0;
-  user-select: none;
-}
-
 .crop-window {
   position: absolute;
   box-sizing: border-box;
@@ -1592,8 +1595,24 @@ select.input {
   cursor: move;
 }
 
-.crop-window > .sample-overlay {
-  overflow: hidden;
+.rotation-handle {
+  position: absolute;
+  z-index: 3;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--text);
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+  cursor: grab;
+  touch-action: none;
+  transform: translate(-50%, -150%);
+}
+.rotation-handle:active {
+  cursor: grabbing;
 }
 
 .crop-handle {

@@ -157,6 +157,17 @@ const scanSource = (label: string, width: number, height: number): ScanSource =>
   height,
   data_url: previewImage(label, width, height),
 });
+const rotatedSize = (width: number, height: number, angle: number) => {
+  const radians = angle * Math.PI / 180;
+  let cosine = Math.abs(Math.cos(radians));
+  let sine = Math.abs(Math.sin(radians));
+  if (cosine < 1e-12) cosine = 0;
+  if (sine < 1e-12) sine = 0;
+  return {
+    width: Math.max(1, Math.ceil(width * cosine + height * sine)),
+    height: Math.max(1, Math.ceil(width * sine + height * cosine)),
+  };
+};
 const managedScans = new Map<string, ScanSource>();
 const originalScans = new Map<string, ScanSource>();
 for (const item of presets.filter((entry) => entry.has_scan)) {
@@ -379,12 +390,15 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
       const path = String(args?.path ?? "");
       const sourceWidth = 1600;
       const sourceHeight = 1200;
+      const angle = Number(args?.angle ?? 0);
+      if (!Number.isFinite(angle) || angle < -180 || angle > 180) throw "Rotation must be between -180 and 180 degrees.";
+      const canvas = rotatedSize(sourceWidth, sourceHeight, angle);
       const x = Number(args?.x);
       const y = Number(args?.y);
       const width = Number(args?.width);
       const height = Number(args?.height);
       if (!SCAN_EXTENSIONS.includes(extensionOf(path))) throw "Calibration scan must be a PNG or JPEG image.";
-      if (![x, y, width, height].every(Number.isInteger) || x < 0 || y < 0 || width < 32 || height < 32 || x + width > sourceWidth || y + height > sourceHeight) {
+      if (![x, y, width, height].every(Number.isInteger) || x < 0 || y < 0 || width < 32 || height < 32 || x + width > canvas.width || y + height > canvas.height) {
         throw "The crop is outside the source image or smaller than 32 × 32 px.";
       }
       presets = presets.map((item) => item.id === id ? { ...item, has_scan: true } : item);
@@ -401,8 +415,11 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
       const match = presetOf(id);
       if (!match.has_scan) throw "This preset has no calibration scan.";
       const source = managedScans.get(id) ?? scanSource("Current scan", 2400, 2400);
+      const angle = Number(args?.angle ?? 0);
+      if (!Number.isFinite(angle) || angle < -180 || angle > 180) throw "Rotation must be between -180 and 180 degrees.";
+      const canvas = rotatedSize(source.width, source.height, angle);
       const x = Number(args?.x), y = Number(args?.y), width = Number(args?.width), height = Number(args?.height);
-      if (![x, y, width, height].every(Number.isInteger) || x < 0 || y < 0 || width < 32 || height < 32 || x + width > source.width || y + height > source.height) {
+      if (![x, y, width, height].every(Number.isInteger) || x < 0 || y < 0 || width < 32 || height < 32 || x + width > canvas.width || y + height > canvas.height) {
         throw "The crop is outside the source image or smaller than 32 × 32 px.";
       }
       managedScans.set(id, scanSource("Current scan", match.calibration.block_size * match.calibration.columns, match.calibration.block_size * match.calibration.rows));
@@ -418,8 +435,11 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
       if (!match.has_scan) throw "This preset has no calibration scan.";
       const source = originalScans.get(id) ?? managedScans.get(id);
       if (!source) throw "This preset has no calibration scan.";
+      const angle = Number(args?.angle ?? 0);
+      if (!Number.isFinite(angle) || angle < -180 || angle > 180) throw "Rotation must be between -180 and 180 degrees.";
+      const canvas = rotatedSize(source.width, source.height, angle);
       const x = Number(args?.x), y = Number(args?.y), width = Number(args?.width), height = Number(args?.height);
-      if (![x, y, width, height].every(Number.isInteger) || x < 0 || y < 0 || width < 32 || height < 32 || x + width > source.width || y + height > source.height) {
+      if (![x, y, width, height].every(Number.isInteger) || x < 0 || y < 0 || width < 32 || height < 32 || x + width > canvas.width || y + height > canvas.height) {
         throw "The crop is outside the source image or smaller than 32 × 32 px.";
       }
       managedScans.set(id, scanSource("Current scan", match.calibration.block_size * match.calibration.columns, match.calibration.block_size * match.calibration.rows));

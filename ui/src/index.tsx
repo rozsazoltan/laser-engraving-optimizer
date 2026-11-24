@@ -538,16 +538,16 @@ export default function App() {
     });
   }
 
-  function importCroppedScan(crop: Crop) {
+  function importCroppedScan(crop: Crop, angle: number) {
     const session = cropSession();
     if (!session) return;
     void run("crop-import", async () => {
       adopt(
         session.path
-          ? await bridge.importScanCrop(session.id, session.path, crop.x, crop.y, crop.width, crop.height)
+          ? await bridge.importScanCrop(session.id, session.path, angle, crop.x, crop.y, crop.width, crop.height)
           : session.sourceMode === "original"
-            ? await bridge.importScanCropSource(session.id, crop)
-            : await bridge.importScanCropPreset(session.id, crop),
+            ? await bridge.importScanCropSource(session.id, { ...crop, angle })
+            : await bridge.importScanCropPreset(session.id, { ...crop, angle }),
         { keepDraft: true },
       );
       setCropSession(null);
