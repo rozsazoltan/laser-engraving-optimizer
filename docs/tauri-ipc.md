@@ -277,3 +277,7 @@ Wordmark `engraving`, muted line `Loading presets…`, and a thin indeterminate
 accent bar. Shown until the first `get_state` resolves (minimum ~400 ms), with a
 short fade. A failed initial load shows the error plus a Retry action instead of
 an empty app.
+
+### Rotation
+
+The three crop commands take an `angle` argument (degrees, -180..180, default 0). The image is rotated about its centre first and the canvas grows to the rotated bounding box: `w' = max(1, ceil(w*|cos| + h*|sin|))`, `h' = max(1, ceil(w*|sin| + h*|cos|))`, with trig values within 1e-12 of zero snapped to zero. The crop rectangle is expressed in that rotated canvas space, so the UI mirrors the same formula. Pixels outside the source use the nearest edge pixel.
