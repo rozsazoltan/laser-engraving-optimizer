@@ -284,6 +284,22 @@ accent bar. Shown until the first `get_state` resolves (minimum ~400 ms), with a
 short fade. A failed initial load shows the error plus a Retry action instead of
 an empty app.
 
+## Operation feedback
+
+State, persistence, preview, and image commands execute on Tauri blocking
+workers. Native file dialogs remain asynchronous, and window controls retain
+their UI-thread behavior. IPC success payloads and persistence rules are unchanged.
+
+The frontend tracks an operation from file selection through its command result.
+Pending actions have local labels and a live status-bar message. Completion,
+cancellation and failure release the action controls. The crop editor displays
+pending and error messages inside its dialog, where the status bar is not visible.
+Preview requests and image decoding expose separate loading and failure states.
+
+Operation feedback is indeterminate: the commands do not report measured progress,
+so the UI does not present elapsed-time estimates as completion percentages.
+Unrelated navigation remains available; conflicting mutations cannot overlap.
+
 ### Rotation
 
 The three crop commands take an `angle` argument (degrees, -180..180, default 0). The image is rotated about its centre first and the canvas grows to the rotated bounding box: `w' = max(1, ceil(w*|cos| + h*|sin|))`, `h' = max(1, ceil(w*|sin| + h*|cos|))`, with trig values within 1e-12 of zero snapped to zero. The crop rectangle is expressed in that rotated canvas space, so the UI mirrors the same formula. Pixels outside the source use the nearest edge pixel.

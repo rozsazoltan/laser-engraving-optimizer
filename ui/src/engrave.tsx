@@ -1,4 +1,4 @@
-import { For, Show } from "solid-js";
+import { For, Show, createEffect, createSignal, onMount } from "solid-js";
 import { Field } from "./fields";
 import type { DocTab, JobEntry, Preset, ProcessResult } from "./types";
 
@@ -74,6 +74,19 @@ type PreviewProps = {
 };
 
 function Preview(props: PreviewProps) {
+  const [imageState, setImageState] = createSignal<"loading" | "ready" | "error">("loading");
+  let image: HTMLImageElement | undefined;
+  const settleLoadedImage = (source?: string) => {
+    if (!source || !image?.complete) return;
+    const expected = new URL(source, document.baseURI).href;
+    if (image.currentSrc === expected) setImageState(image.naturalWidth > 0 ? "ready" : "error");
+  };
+  createEffect(() => {
+    const source = props.src;
+    setImageState("loading");
+    settleLoadedImage(source);
+  });
+  onMount(() => settleLoadedImage(props.src));
   return (
     <figure class="preview">
       <figcaption class="preview-head">
@@ -82,7 +95,12 @@ function Preview(props: PreviewProps) {
       </figcaption>
       <div class="preview-body">
         <Show when={props.src} fallback={<p class="preview-empty">{props.empty}</p>}>
-          {(src) => <img src={src()} alt={`${props.title} preview`} draggable={false} />}
+          {(src) => <>
+            <Show when={imageState() === "loading"}><p class="preview-empty" role="status">Loading {props.title.toLowerCase()} preview…</p></Show>
+            <Show when={imageState() === "error"}><p class="preview-empty" role="alert">Could not display {props.title.toLowerCase()} preview</p></Show>
+            <img ref={image} src={src()} alt={`${props.title} preview`} draggable={false}
+              onLoad={() => setImageState("ready")} onError={() => setImageState("error")} />
+          </>}
         </Show>
       </div>
     </figure>
@@ -124,9 +142,12 @@ export function EngraveArea(props: EngraveProps) {
   const canSave = () => !!props.result && !props.busy && props.presetSelected && props.isLatest && !props.staleReason;
   const historical = () => props.historyCount > 0 && !props.isLatest;
   const canReprocess = () => canProcess() && !!tab()?.photoPath;
+  const processing = () => props.working === "process" || props.working === "image-decode";
+  const processingError = () => tab()?.processingError;
 
   const emptyText = () =>
-    props.staleReason ? "Waiting for a processed image." : "Choose an image to engrave.";
+    processing() ? "Preview pending…" : processingError() ? "No preview available." :
+      props.staleReason ? "Waiting for a processed image." : "Choose an image to engrave.";
 
   if (!props.hasLasers) {
     return (
@@ -192,7 +213,11 @@ export function EngraveArea(props: EngraveProps) {
 
             <div class="row-actions">
               <button type="button" class="btn" disabled={!canProcess()} onClick={props.onChoose}>
-                {props.working === "process"
+                {props.working === "image-picker"
+                  ? "Choosing image…"
+                  : props.working === "image-decode"
+                    ? "Preparing image…"
+                    : props.working === "process"
                   ? "Processing…"
                   : tab()?.photoPath
                     ? "Choose another…"
@@ -257,6 +282,20 @@ export function EngraveArea(props: EngraveProps) {
               {(reason) => <p class="hint warn engrave-warning">{reason()}</p>}
             </Show>
 
+            <Show when={processing()}>
+              <p class="operation-note" role="status">
+                Processing photo…{props.result ? " Showing the previous result." : " Previews will appear here."}
+              </p>
+            </Show>
+            <Show when={!processing() && processingError()}>
+              <div class="operation-note">
+                <span class="warn" role="alert">{processingError()}{props.result ? " Showing the previous result." : ""}</span>
+                <Show when={tab()?.photoPath}>
+                  {" "}<button type="button" class="btn" disabled={!canReprocess()} onClick={props.onReprocess}>Retry processing</button>
+                </Show>
+              </div>
+            </Show>
+
             <div class={`previews ${historical() ? "previews-historical" : ""}`}>
               <Preview
                 title="Engraving"
@@ -280,7 +319,7 @@ export function EngraveArea(props: EngraveProps) {
                   disabled={!canSave()}
                   onClick={() => props.onSave("engraving")}
                 >
-                {props.working === "save-engraving" ? "Saving…" : "Save engraving PNG…"}
+                 {props.working === "save-engraving-picker" ? "Choose engraving location…" : props.working === "save-engraving" ? "Saving…" : "Save engraving PNG…"}
                 </button>
                 <button
                   type="button"
@@ -288,7 +327,7 @@ export function EngraveArea(props: EngraveProps) {
                   disabled={!canSave()}
                   onClick={() => props.onSave("simulation")}
                 >
-                  {props.working === "save-simulation" ? "Saving…" : "Save simulation PNG…"}
+                   {props.working === "save-simulation-picker" ? "Choose simulation location…" : props.working === "save-simulation" ? "Saving…" : "Save simulation PNG…"}
                 </button>
                 <button
                   type="button"
@@ -296,7 +335,7 @@ export function EngraveArea(props: EngraveProps) {
                   disabled={!canSave()}
                   onClick={() => props.onSave("report")}
                 >
-                  {props.working === "save-report" ? "Saving…" : "Save report CSV…"}
+                   {props.working === "save-report-picker" ? "Choose report location…" : props.working === "save-report" ? "Saving…" : "Save report CSV…"}
                 </button>
               </div>
               <span class="hint">

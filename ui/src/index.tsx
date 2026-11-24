@@ -6,7 +6,7 @@ import { FaqArea } from "./faq";
 import { LasersArea } from "./lasers";
 import { PresetsArea } from "./presets";
 import type { Crop } from "./scancrop";
-import { ProgressScreen, Splash, type SplashPhase } from "./splash";
+import { Splash, type SplashPhase } from "./splash";
 import {
   draftOf,
   laserLabel,
@@ -40,26 +40,30 @@ function savedSpeedUnit(): SpeedUnit {
 
 const WORKING_LABEL: Record<string, string> = {
   "laser-add": "Adding laser",
-  "laser-rename": "Renaming laser",
   "select-laser": "Switching laser",
   select: "Switching preset",
   "preset-add": "Creating preset",
   save: "Saving preset",
   "preset-remove": "Removing preset",
   "laser-remove": "Removing laser",
-  import: "Importing scan",
+  "laser-rename": "Renaming laser",
+  "scan-remove": "Removing scan",
+  "archive-open": "Opening scan archive",
+  "archive-clear": "Clearing scan archive",
   "scan-source": "Loading scan",
+  "scan-picker": "Choose calibration scan",
+  "image-picker": "Choose image",
+  "save-engraving-picker": "Choose engraving save location",
+  "save-simulation-picker": "Choose simulation save location",
+  "save-report-picker": "Choose report save location",
+  "gauge-picker": "Choose export location",
+  "image-decode": "Preparing image",
   "crop-import": "Importing cropped scan",
   gauge: "Exporting gauge",
   process: "Processing photo",
   "save-engraving": "Saving engraving",
   "save-simulation": "Saving simulation",
   "save-report": "Saving report",
-};
-
-const estimateMs = (kind: string, megapixels?: number) => {
-  if (kind === "process") return Math.min(8000, 1500 + Math.max(0, (megapixels ?? 2) - 2) * 1000);
-  return null;
 };
 
 const slug = (value: string) =>
@@ -134,7 +138,6 @@ export default function App() {
   const [tabs, setTabs] = createSignal<DocTab[]>([]);
   const [activeTabId, setActiveTabId] = createSignal<string | null>(null);
   const [working, setWorking] = createSignal<string | null>(null);
-  const [operationProgress, setOperationProgress] = createSignal<{ label: string; percentage: number } | null>(null);
   const [failure, setFailure] = createSignal<string | null>(null);
   const [notice, setNotice] = createSignal<string | null>(null);
   const [pending, setPending] = createSignal<Pending | null>(null);
@@ -142,6 +145,7 @@ export default function App() {
   const [bootError, setBootError] = createSignal("");
   const [previewCache, setPreviewCache] = createSignal<Record<string, PresetPreview>>({});
   const [previewLoading, setPreviewLoading] = createSignal(false);
+  const [previewError, setPreviewError] = createSignal<string | null>(null);
   const [geometryCache, setGeometryCache] = createSignal<Record<string, ScanGeometry>>({});
   const [cropSession, setCropSession] = createSignal<{ id: string; path: string | null; source: ScanSource; sourceMode: "original" | "current" | null } | null>(null);
 
@@ -193,11 +197,12 @@ export default function App() {
   async function refreshPresetPreview(id: string) {
     const request = ++previewRequest;
     setPreviewLoading(true);
+    setPreviewError(null);
     try {
       const preview = await bridge.presetPreview(id);
       setPreviewCache((cache) => ({ ...cache, [id]: preview }));
-    } catch {
-      // Preview failure must not block editing or replace host status.
+    } catch (error) {
+      if (request === previewRequest) setPreviewError(errorText(error));
     } finally {
       if (request === previewRequest) setPreviewLoading(false);
     }
@@ -230,10 +235,10 @@ export default function App() {
   const activeError = createMemo(() => failure() ?? data()?.error ?? null);
 
   const statusText = createMemo(() => {
-    const message = activeError();
-    if (message) return message;
     const key = working();
     if (key) return `${WORKING_LABEL[key] ?? "Working"}…`;
+    const message = activeError();
+    if (message) return message;
     return notice() ?? data()?.status ?? "Ready";
   });
 
@@ -334,32 +339,20 @@ export default function App() {
     }
   }
 
-  async function run(key: string, task: () => Promise<void>, megapixels?: number): Promise<boolean> {
+  async function run(key: string, task: () => Promise<void>, onFailure?: (message: string) => void): Promise<boolean> {
     if (busy()) return false;
     setFailure(null);
     setNotice(null);
     setWorking(key);
-    const duration = estimateMs(key, megapixels);
-    const started = Date.now();
-    let timer: number | undefined;
-    if (duration !== null) {
-      setOperationProgress({ label: WORKING_LABEL[key] ?? "Working", percentage: 0 });
-      timer = window.setInterval(() => {
-        setOperationProgress({ label: WORKING_LABEL[key] ?? "Working", percentage: Math.min(95, ((Date.now() - started) / duration) * 95) });
-      }, 80);
-    }
     try {
       await task();
       return true;
     } catch (error) {
-      setFailure(errorText(error));
+      const message = errorText(error);
+      setFailure(message);
+      onFailure?.(message);
       return false;
     } finally {
-      if (timer !== undefined) window.clearInterval(timer);
-      if (duration !== null) {
-        setOperationProgress({ label: WORKING_LABEL[key] ?? "Working", percentage: 100 });
-        window.setTimeout(() => setOperationProgress(null), 140);
-      }
       setWorking(null);
     }
   }
@@ -520,12 +513,14 @@ export default function App() {
     const current = selectedPreset();
     if (!current) return;
     void run("scan-source", async () => {
+      setWorking("scan-picker");
       const path = await bridge.pickOpenFile("Choose calibration scan", ["png", "jpg", "jpeg"]);
       if (!path) return;
+      setWorking("scan-source");
       const source = await bridge.scanSource(path);
       const geometry = geometryCache()[current.id] ?? await bridge.scanGeometry(current.id);
       setGeometryCache((cache) => ({ ...cache, [current.id]: geometry }));
-       setCropSession({ id: current.id, path, source, sourceMode: null });
+      setCropSession({ id: current.id, path, source, sourceMode: null });
     });
   }
 
@@ -538,7 +533,7 @@ export default function App() {
         geometryCache()[current.id] ? Promise.resolve(geometryCache()[current.id]) : bridge.scanGeometry(current.id),
       ]);
       setGeometryCache((cache) => ({ ...cache, [current.id]: geometry }));
-       setCropSession({ id: current.id, path: null, source, sourceMode: "current" });
+      setCropSession({ id: current.id, path: null, source, sourceMode: "current" });
     });
   }
 
@@ -600,8 +595,10 @@ export default function App() {
     const current = selectedPreset();
     if (!current) return;
     void run("gauge", async () => {
+      setWorking("gauge-picker");
       const path = await bridge.pickSaveFile("Export gauge PNG", `${slug(current.name)}-gauge.png`, "png");
       if (!path) return;
+      setWorking("gauge");
       adopt(await bridge.exportGauge(current.id, path), { keepDraft: true });
     });
   }
@@ -667,31 +664,33 @@ export default function App() {
     if (!tab?.presetId) return;
     const preset = tabPreset();
     if (!preset?.has_scan) return;
-    void run("process", async () => {
+    void run("image-picker", async () => {
       const path = await bridge.pickOpenFile("Choose photo to engrave", PHOTO_EXTENSIONS);
       if (!path) return;
+      setWorking("image-decode");
       if (data()?.selected_preset !== tab.presetId) {
         throw "Select this tab’s preset before processing.";
       }
       updateTab(tab.id, {
         photoPath: path,
+        processingError: null,
         entries: [],
         index: -1,
         title: tab.title === "New image" ? titleFromPath(path) : tab.title,
       });
+      setWorking("process");
       const result = await bridge.processPhoto(tab.id, path);
       const saved = data()?.presets.find((item) => item.id === tab.presetId) ?? null;
       if (saved) appendJob(tab, path, result, saved);
       setNotice(`Processed ${result.width} × ${result.height} px with “${saved?.name ?? "preset"}”`);
-    });
+    }, (processingError) => updateTab(tab.id, { processingError }));
   }
 
   function reprocessImage() {
     const tab = activeTab();
     if (!tab?.photoPath || !tab.presetId) return;
-    const current = tab.entries[tab.index]?.result;
-    const megapixels = current ? (current.width * current.height) / 1_000_000 : undefined;
     void run("process", async () => {
+      updateTab(tab.id, { processingError: null });
       if (data()?.selected_preset !== tab.presetId) {
         throw "Select this tab’s preset before processing.";
       }
@@ -699,7 +698,7 @@ export default function App() {
       const saved = data()?.presets.find((item) => item.id === tab.presetId) ?? null;
       if (saved) appendJob(tab, tab.photoPath!, result, saved);
       setNotice(`Processed ${result.width} × ${result.height} px with “${saved?.name ?? "preset"}”`);
-    }, megapixels);
+    }, (processingError) => updateTab(tab.id, { processingError }));
   }
   function appendJob(tab: DocTab, photoPath: string, result: ProcessResult, preset: Preset) {
     const entry: JobEntry = {
@@ -737,9 +736,10 @@ export default function App() {
           ? { key: "save-simulation", title: "Save simulation PNG", file: `${base}-simulation.png`, ext: "png", verb: "Simulation", call: (path: string) => bridge.saveSimulation(tab.id, path) }
           : { key: "save-report", title: "Save report CSV", file: `${base}-report.csv`, ext: "csv", verb: "Report", call: (path: string) => bridge.saveReport(tab.id, path) };
 
-    void run(spec.key, async () => {
+    void run(`${spec.key}-picker`, async () => {
       const path = await bridge.pickSaveFile(spec.title, spec.file, spec.ext);
       if (!path) return;
+      setWorking(spec.key);
       adopt(await spec.call(path), { keepDraft: true });
       setNotice(`${spec.verb} saved to ${path}`);
     });
@@ -775,7 +775,7 @@ export default function App() {
           />
         </Show>
 
-        <main class="surface" aria-busy={busy()}>
+        <main class="surface">
           <Show when={data()}>
             {(state) => (
               <>
@@ -798,6 +798,7 @@ export default function App() {
                       return acc;
                     }, {})}
                     busy={busy()}
+                    working={working()}
                     onSelect={selectLaser}
                     onAdd={addLaser}
                     onRename={renameLaser}
@@ -816,8 +817,10 @@ export default function App() {
                     dirty={draftDirty()}
                     busy={busy()}
                     working={working()}
+                    operationError={failure()}
                     preview={selectedPreset() ? previewCache()[selectedPreset()!.id] ?? null : null}
                     previewLoading={previewLoading()}
+                    previewError={previewError()}
                     geometry={selectedPreset() ? geometryCache()[selectedPreset()!.id] ?? null : null}
                     cropSource={cropSession()?.id === selectedPreset()?.id ? cropSession()!.source : null}
                     cropCanImport={!!cropSession()}
@@ -879,7 +882,7 @@ export default function App() {
                   <FaqArea />
                 </Show>
 
-                <footer class={`statusbar ${activeError() ? "status-error" : ""}`} role="status" aria-live="polite">
+                 <footer class={`statusbar ${activeError() ? "status-error" : ""} ${working() ? "status-working" : ""}`} role="status">
                   <div class="status-left">
                     <span class="status-dot" aria-hidden="true" />
                     <span class="status-text" title={statusText()}>
@@ -894,13 +897,6 @@ export default function App() {
                   </div>
                 </footer>
               </>
-            )}
-          </Show>
-          <Show when={operationProgress()}>
-            {(progress) => (
-              <div class="operation-progress">
-                <ProgressScreen label={progress().label} percentage={progress().percentage} />
-              </div>
             )}
           </Show>
         </main>

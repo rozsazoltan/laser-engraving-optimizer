@@ -1,4 +1,4 @@
-import { For, batch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, batch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { ScanGeometry, ScanSource } from "./types";
 
 type Crop = { x: number; y: number; width: number; height: number; corners?: [number, number][] };
@@ -32,6 +32,8 @@ type Props = {
   canImport: boolean;
   editingSaved: boolean;
   sourceMode: "original" | "current" | null;
+  working: string | null;
+  operationError: string | null;
   onSourceMode: (mode: "original" | "current") => void;
   onImport: (crop: Crop, angle: number) => void;
   onCancel: () => void;
@@ -97,13 +99,31 @@ export function ScanCropEditor(props: Props) {
     panFrame = 0;
     pendingPan = null;
   };
-  const [viewportHeight, setViewportHeight] = createSignal(0);
+  const [viewport, setViewport] = createSignal({ width: 0, height: 0 });
+  const [imageReady, setImageReady] = createSignal(false);
+  const [imageFailed, setImageFailed] = createSignal(false);
+  let sourceImage: HTMLImageElement | undefined;
+  const settleSourceImage = (source: string) => {
+    if (!sourceImage?.complete || sourceImage.currentSrc !== new URL(source, document.baseURI).href) return;
+    setImageReady(sourceImage.naturalWidth > 0);
+    setImageFailed(sourceImage.naturalWidth === 0);
+  };
+  createEffect(() => {
+    const source = props.source.data_url;
+    setImageReady(false);
+    setImageFailed(false);
+    settleSourceImage(source);
+  });
 
   onMount(() => {
-    const update = () => setViewportHeight(stageElement?.getBoundingClientRect().height ?? 0);
+    const stage = stageElement;
+    if (!stage) return;
+    const update = () => setViewport({ width: stage.clientWidth, height: stage.clientHeight });
     update();
-    window.addEventListener("resize", update);
-    onCleanup(() => window.removeEventListener("resize", update));
+    settleSourceImage(props.source.data_url);
+    const observer = new ResizeObserver(update);
+    observer.observe(stage);
+    onCleanup(() => observer.disconnect());
   });
 
   createEffect(() => {
@@ -144,10 +164,28 @@ export function ScanCropEditor(props: Props) {
   onCleanup(clearPendingPan);
 
   const frameScreenWidth = () => {
-    const available = viewportHeight() ? viewportHeight() - 16 : 380;
+    const available = viewport().height ? viewport().height - 16 : 380;
     return Math.max(120, Math.min(740, available * ratio(), 380 * ratio()));
   };
-  const scale = () => frameScreenWidth() / frame().width;
+  const perspectiveView = createMemo(() => {
+    const { width, height } = canvasSize();
+    const active = drag();
+    // Hold the viewport steady under the pointer until the drag ends.
+    const points = active?.mode === "quad" ? active.points : quadPoints();
+    const xs = points.map(([x]) => x);
+    const ys = points.map(([, y]) => y);
+    const left = Math.min(0, ...xs);
+    const right = Math.max(width, ...xs);
+    const top = Math.min(0, ...ys);
+    const bottom = Math.max(height, ...ys);
+    const padding = 32;
+    const fit = Math.min(
+      Math.max(1, viewport().width - padding) / (right - left),
+      Math.max(1, viewport().height - padding) / (bottom - top),
+    );
+    return { scale: fit, x: (width - left - right) * fit / 2, y: (height - top - bottom) * fit / 2 };
+  });
+  const scale = () => perspective() ? perspectiveView().scale : frameScreenWidth() / frame().width;
   const crop = (): Crop => {
     const points = quad();
     const box = { x: Math.round(pan().x), y: Math.round(pan().y), ...frame() };
@@ -240,7 +278,7 @@ export function ScanCropEditor(props: Props) {
   };
 
   const beginPan = (event: PointerEvent) => {
-    if (props.busy || drag() || event.button !== 0 || !canvasElement || !stageElement) return;
+    if (props.busy || perspective() || drag() || event.button !== 0 || !canvasElement || !stageElement) return;
     const scale = canvasElement.getBoundingClientRect().width / canvasSize().width;
     if (scale <= 0) return;
     event.preventDefault();
@@ -349,7 +387,7 @@ export function ScanCropEditor(props: Props) {
   };
 
   const nudge = (event: KeyboardEvent) => {
-    if (props.busy || drag() || event.target !== stageElement || document.activeElement !== stageElement) return;
+    if (props.busy || perspective() || drag() || event.target !== stageElement || document.activeElement !== stageElement) return;
     if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
     event.preventDefault();
     const distance = event.shiftKey ? 10 : 1;
@@ -363,8 +401,8 @@ export function ScanCropEditor(props: Props) {
   const imageStyle = () => {
     const size = canvasSize();
     const box = crop();
-    const offsetX = (size.width / 2 - box.x - box.width / 2) * scale();
-    const offsetY = (size.height / 2 - box.y - box.height / 2) * scale();
+    const offsetX = perspective() ? 0 : (size.width / 2 - box.x - box.width / 2) * scale();
+    const offsetY = perspective() ? 0 : (size.height / 2 - box.y - box.height / 2) * scale();
     return {
       width: `${props.source.width * scale()}px`,
       height: `${props.source.height * scale()}px`,
@@ -382,8 +420,8 @@ export function ScanCropEditor(props: Props) {
         <header class="scan-editor-head">
           <div><span class="section-label">Calibration scan</span><h2>Edit crop</h2></div>
           {props.editingSaved && <div class="source-switch" role="group" aria-label="Scan source">
-            <button type="button" class={props.sourceMode === "original" ? "active" : ""} aria-pressed={props.sourceMode === "original"} disabled={props.busy} onClick={() => props.onSourceMode("original")}>Original</button>
-            <button type="button" class={props.sourceMode === "current" ? "active" : ""} aria-pressed={props.sourceMode === "current"} disabled={props.busy} onClick={() => props.onSourceMode("current")}>Current scan</button>
+            <button type="button" class={props.sourceMode === "original" ? "active" : ""} aria-pressed={props.sourceMode === "original"} disabled={props.busy} onClick={() => props.onSourceMode("original")}>{props.busy && props.working === "scan-source" && props.sourceMode !== "original" ? "Loading original…" : "Original"}</button>
+            <button type="button" class={props.sourceMode === "current" ? "active" : ""} aria-pressed={props.sourceMode === "current"} disabled={props.busy} onClick={() => props.onSourceMode("current")}>{props.busy && props.working === "scan-source" && props.sourceMode !== "current" ? "Loading current…" : "Current scan"}</button>
           </div>}
           <button type="button" class="btn" disabled={props.busy} onClick={props.onCancel}>Cancel</button>
         </header>
@@ -395,14 +433,20 @@ export function ScanCropEditor(props: Props) {
         <div ref={stageElement} class="crop-viewport crop-stage" role="group" tabindex="0" onKeyDown={nudge}
           onPointerDown={beginPan} onPointerMove={moveDrag} onPointerUp={endDrag}
           onPointerCancel={cancelDrag} onLostPointerCapture={cancelDrag}
-          aria-label="Scan crop preview. Drag image to position it. Use arrow keys to nudge.">
+          aria-label={perspective() ? "Scan crop preview. Drag the four perspective corners." : "Scan crop preview. Drag image to position it. Use arrow keys to nudge."}>
           <div
             ref={canvasElement}
             class="crop-canvas"
-            style={{ width: `${canvasSize().width * scale()}px`, height: `${canvasSize().height * scale()}px` }}
+            style={{
+              width: `${canvasSize().width * scale()}px`,
+              height: `${canvasSize().height * scale()}px`,
+              left: perspective() ? `calc(50% + ${perspectiveView().x}px)` : undefined,
+              top: perspective() ? `calc(50% + ${perspectiveView().y}px)` : undefined,
+            }}
           >
             <div class="rotated-image" style={imageStyle()}>
-              <img src={props.source.data_url} alt="Selected calibration scan" draggable={false} />
+              <img ref={sourceImage} src={props.source.data_url} alt="Selected calibration scan" draggable={false}
+                onLoad={() => setImageReady(true)} onError={() => setImageFailed(true)} />
             </div>
             {perspective() && (
               <>
@@ -436,7 +480,7 @@ export function ScanCropEditor(props: Props) {
             onPointerDown={beginRotate}>
             ↻
           </button>
-          <div class="zoom-controls" role="group" aria-label="Zoom" onPointerDown={(event) => event.stopPropagation()}>
+          {!perspective() && <div class="zoom-controls" role="group" aria-label="Zoom" onPointerDown={(event) => event.stopPropagation()}>
             <button type="button" aria-label="Zoom in" disabled={props.busy || zoom() >= 20}
               onClick={() => setZoomValue(zoom() * 1.1)}>+</button>
             <button type="button" aria-label="Zoom out" disabled={props.busy || zoom() <= 1}
@@ -448,7 +492,7 @@ export function ScanCropEditor(props: Props) {
                 <path d="M4 5v3M6.5 5v2M9 5v3M11.5 5v2" stroke="currentColor" fill="none" />
               </svg>
             </button>
-          </div>
+          </div>}
         </div>
         <div class="crop-fields-head">
           <span class="section-label">Rotated canvas {canvasSize().width} × {canvasSize().height} px · frame {crop().width} × {crop().height} px · zoom {Math.round(zoom() * 100) / 100}×</span>
@@ -475,14 +519,21 @@ export function ScanCropEditor(props: Props) {
           </>
         )}
         {!props.canImport && <p class="hint warn">This saved scan can be previewed, but saving its crop needs host support.</p>}
-        <div class="row-actions">
-          <button type="button" class="btn primary" disabled={props.busy || !props.canImport}
-            onClick={() => {
-              flushPan();
-              props.onImport(crop(), angle());
-            }}>{props.busy ? (props.editingSaved ? "Saving…" : "Importing…") : (props.editingSaved ? "Save" : "Import")}</button>
-          <button type="button" class="btn" disabled={props.busy} onClick={props.onCancel}>Cancel</button>
-        </div>
+        <footer class="crop-actions">
+          <Show when={props.operationError || props.busy || !imageReady() || imageFailed()}>
+            <div class={`crop-operation ${imageFailed() || props.operationError ? "error" : ""}`} role={imageFailed() || props.operationError ? "alert" : "status"}>
+              {props.operationError ?? (imageFailed() ? "Could not load scan preview" : props.busy ? (props.working === "crop-import" ? (props.editingSaved ? "Saving crop…" : "Importing scan…") : props.working === "scan-source" ? "Loading scan source…" : "Working…") : "Loading scan preview…")}
+            </div>
+          </Show>
+          <div class="row-actions">
+            <button type="button" class="btn primary" disabled={props.busy || !props.canImport || !imageReady() || imageFailed()}
+              onClick={() => {
+                flushPan();
+                props.onImport(crop(), angle());
+              }}>{props.busy && props.working === "crop-import" ? (props.editingSaved ? "Saving…" : "Importing…") : (props.editingSaved ? "Save" : "Import")}</button>
+            <button type="button" class="btn" disabled={props.busy} onClick={props.onCancel}>Cancel</button>
+          </div>
+        </footer>
       </section>
     </div>
   );

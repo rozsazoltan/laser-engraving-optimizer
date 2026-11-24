@@ -43,8 +43,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   onto the gauge size, so a photo taken at an angle still yields a usable scan.
 - The crop settings are stored with the preset, so the **Original** source
   reopens the untouched photo with the saved rotation, zoom, pan and corners.
-- The full-screen progress overlay is reserved for photo processing; loading a
-  scan or saving a crop now only disables the affected controls.
+- Operation feedback at the action and in the status bar for file selection,
+  imports, processing, preset and laser changes, deletion, archives and exports.
+  The crop editor shows its own pending and error states.
 - Creality Falcon2 Pro S 22W calibration instructions.
 
 ### Changed
@@ -56,6 +57,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   presets are visible.
 - Startup screen shows a grey `engraving` wordmark with Autark's whitish sheen
   animation, a 0-100% readout, and a determinate gold loading bar.
+- Photo processing uses non-blocking, indeterminate feedback instead of a
+  full-screen overlay with a time-estimated percentage.
 
 ### Removed
 - Python reference scripts, `requirements.txt`, and the Python toolchain pin;
@@ -69,4 +72,5 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Unstable cubic polynomial fitting and non-monotonic power interpolation.
 - Loss of almost all test patches caused by an arbitrary brightness-difference threshold.
 - The window no longer freezes while a photo is processed, a calibration scan is
-  imported, or a result is saved; heavy commands run on the async runtime.
+  imported, or a result is saved; state, disk, and image commands run on dedicated
+  blocking workers rather than the window thread or async executor.

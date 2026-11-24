@@ -84,6 +84,7 @@ export type JobEntry = {
 
 /** One document tab: its own image, preset choice and processing history. */
 export type DocTab = {
+  processingError?: string | null;
   id: string;
   title: string;
   presetId: string | null;

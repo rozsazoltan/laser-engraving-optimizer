@@ -6,6 +6,7 @@ type Props = {
   selectedLaser: string | null;
   presetCounts: Record<string, number>;
   busy: boolean;
+  working: string | null;
   onSelect: (id: string) => void;
   onAdd: (name: string, watts: number) => Promise<boolean>;
   onRename: (id: string, name: string, watts: number) => Promise<boolean>;
@@ -76,7 +77,7 @@ export function LasersArea(props: Props) {
           <span class="watts-unit">W</span>
         </span>
         <button type="submit" class="btn" disabled={props.busy || !name().trim()}>
-          Add laser
+          {props.working === "laser-add" ? "Adding…" : "Add laser"}
         </button>
       </form>
 
@@ -105,7 +106,7 @@ export function LasersArea(props: Props) {
                         disabled={props.busy}
                         aria-pressed={laser.id === props.selectedLaser}
                       >
-                        <span class="laser-name">{laserLabel(laser)}</span>
+                          <span class="laser-name">{laserLabel(laser)}</span>
                         <span class="laser-count">
                           {props.presetCounts[laser.id] ?? 0} preset
                           {(props.presetCounts[laser.id] ?? 0) === 1 ? "" : "s"}
@@ -157,7 +158,7 @@ export function LasersArea(props: Props) {
                       disabled={props.busy || !editName().trim()}
                       onClick={() => void commitRename(laser.id)}
                     >
-                      Save
+                       {props.working === "laser-rename" ? "Saving…" : "Save"}
                     </button>
                     <button type="button" class="btn small" onClick={() => setEditingId(null)}>
                       Cancel
@@ -168,6 +169,9 @@ export function LasersArea(props: Props) {
             )}
           </For>
         </ul>
+        <Show when={props.working === "laser-rename" || props.working === "laser-remove"}>
+          <p class="operation-note" role="status">{props.working === "laser-rename" ? "Renaming laser…" : "Removing laser…"}</p>
+        </Show>
       </Show>
 
       <div class="area-foot">

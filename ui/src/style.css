@@ -1346,8 +1346,20 @@ select.input {
   background: var(--warn);
 }
 
+.status-working .status-dot {
+  animation: status-pulse 1s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+  50% { opacity: 0.35; }
+}
+
 .status-error .status-text {
   color: var(--warn);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-working .status-dot { animation: none; opacity: 0.65; }
 }
 
 .status-right {
@@ -1448,7 +1460,7 @@ select.input {
   color: var(--muted);
 }
 
-/* Determinate loading bar: a gold fill growing from 0 to 100 percent. */
+/* Indeterminate loading bar: startup has no measurable completion fraction. */
 .splash-bar {
   position: relative;
   width: 120px;
@@ -1460,9 +1472,20 @@ select.input {
 
 .splash-fill {
   display: block;
+  width: 36%;
   height: 100%;
   background: #d0aa61;
-  transition: width 0.12s linear;
+  animation: splash-progress 1.35s ease-in-out infinite;
+}
+
+@keyframes splash-progress {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(280%); }
+}
+
+.splash.leaving .splash-fill {
+  width: 100%;
+  animation: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1473,7 +1496,8 @@ select.input {
   }
 
   .splash-fill {
-    transition: none;
+    margin-inline: auto;
+    animation: none;
   }
 }
 
@@ -1830,6 +1854,45 @@ select.input {
   font-size: 16px;
   font-weight: 500;
   color: var(--text);
+}
+
+.crop-actions {
+  position: sticky;
+  bottom: -20px;
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 8px 0 20px;
+  background: var(--card);
+  z-index: 2;
+}
+
+.crop-operation {
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+  background: #171613;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.crop-operation.error,
+.preview-error {
+  color: var(--warn);
+}
+
+.preview-error {
+  padding: 10px;
+  font-size: 11px;
+}
+
+.operation-note {
+  display: block;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+  background: #151515;
+  color: var(--text);
+  font-size: 11px;
 }
 
 .source-switch {

@@ -3,11 +3,11 @@
 //! Every command returns the fresh [`UiState`] (except `process_photo`, which
 //! returns its own result) and the same value is emitted on the `state` event,
 //! so the UI can update from either channel. Heavy work runs on the async
-//! runtime thread, never on the webview thread.
+//! blocking worker threads, never on the webview thread.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use image::{GrayImage, RgbImage};
@@ -160,9 +160,10 @@ struct Inner {
     previews: HashMap<String, PresetPreview>,
 }
 
+#[derive(Clone)]
 pub struct Host {
     app: tauri::AppHandle,
-    inner: Mutex<Inner>,
+    inner: Arc<Mutex<Inner>>,
 }
 
 fn build_state(inner: &Inner) -> UiState {
@@ -210,14 +211,14 @@ impl Host {
         let store = PresetStore::open_default().map_err(|error| error.to_string())?;
         Ok(Self {
             app,
-            inner: Mutex::new(Inner {
+            inner: Arc::new(Mutex::new(Inner {
                 store,
                 busy: false,
                 status: "Ready".to_string(),
                 error: None,
                 cache: HashMap::new(),
                 previews: HashMap::new(),
-            }),
+            })),
         })
     }
 
@@ -237,6 +238,16 @@ impl Host {
         self.publish(inner);
         message
     }
+}
+
+async fn run_blocking<T, F>(host: Host, work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&Host) -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || work(&host))
+        .await
+        .map_err(|error| format!("Blocking operation failed: {error}"))?
 }
 
 fn guard_busy(inner: &Inner) -> Result<(), String> {
@@ -298,14 +309,18 @@ pub struct ScanSource {
 
 #[tauri::command]
 pub async fn scan_geometry(host: State<'_, Host>, id: String) -> Result<ScanGeometry, String> {
-    let inner = host.lock();
-    let preset = inner
-        .store
-        .presets()
-        .iter()
-        .find(|preset| preset.id == id)
-        .ok_or_else(|| "Preset not found.".to_string())?;
-    build_scan_geometry(&preset.calibration)
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let inner = host.lock();
+        let preset = inner
+            .store
+            .presets()
+            .iter()
+            .find(|preset| preset.id == id)
+            .ok_or_else(|| "Preset not found.".to_string())?;
+        build_scan_geometry(&preset.calibration)
+    })
+    .await
 }
 
 fn build_scan_geometry(spec: &GridCalibrationSpecification) -> Result<ScanGeometry, String> {
@@ -388,9 +403,13 @@ fn rotate_expand(image: &RgbImage, angle_deg: f64) -> Result<RgbImage, String> {
 
 #[tauri::command]
 pub async fn scan_source(host: State<'_, Host>, path: String) -> Result<ScanSource, String> {
-    let _inner = host.lock();
-    drop(_inner);
-    scan_source_path(Path::new(&path))
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let _inner = host.lock();
+        drop(_inner);
+        scan_source_path(Path::new(&path))
+    })
+    .await
 }
 
 fn scan_source_path(path: &Path) -> Result<ScanSource, String> {
@@ -437,29 +456,37 @@ fn preset_scan_path(store: &PresetStore, id: &str) -> Result<PathBuf, String> {
 
 #[tauri::command]
 pub async fn scan_source_preset(host: State<'_, Host>, id: String) -> Result<ScanSource, String> {
-    let path = {
-        let inner = host.lock();
-        preset_scan_path(&inner.store, &id)?
-    };
-    scan_source_path(&path)
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let path = {
+            let inner = host.lock();
+            preset_scan_path(&inner.store, &id)?
+        };
+        scan_source_path(&path)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn scan_source_original(host: State<'_, Host>, id: String) -> Result<ScanSource, String> {
-    let (path, crop) = {
-        let inner = host.lock();
-        let path = original_scan_path(&inner.store, &id)?;
-        let crop = inner
-            .store
-            .presets()
-            .iter()
-            .find(|preset| preset.id == id)
-            .and_then(|preset| preset.scan_crop.clone());
-        (path, crop)
-    };
-    let mut source = scan_source_path(&path)?;
-    source.crop = crop;
-    Ok(source)
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let (path, crop) = {
+            let inner = host.lock();
+            let path = original_scan_path(&inner.store, &id)?;
+            let crop = inner
+                .store
+                .presets()
+                .iter()
+                .find(|preset| preset.id == id)
+                .and_then(|preset| preset.scan_crop.clone());
+            (path, crop)
+        };
+        let mut source = scan_source_path(&path)?;
+        source.crop = crop;
+        Ok(source)
+    })
+    .await
 }
 
 fn original_scan_path(store: &PresetStore, id: &str) -> Result<PathBuf, String> {
@@ -783,165 +810,198 @@ fn stage_preset_crop(
 }
 
 #[tauri::command]
-pub fn get_state(host: State<'_, Host>) -> UiState {
-    build_state(&host.lock())
+pub async fn get_state(host: State<'_, Host>) -> Result<UiState, String> {
+    let host = host.inner().clone();
+    run_blocking(host, move |host| Ok(build_state(&host.lock()))).await
 }
 
 #[tauri::command]
-pub fn add_laser(host: State<'_, Host>, name: String, watts: f64) -> Result<UiState, String> {
-    let mut inner = host.lock();
-    guard_busy(&inner)?;
-    inner.error = None;
-    if let Err(error) = inner.store.add_laser(&name, watts) {
-        return Err(host.fail(&mut inner, error.to_string()));
-    }
-    inner.cache.clear();
-    inner.previews.clear();
-    inner.status = "Laser added".to_string();
-    Ok(host.publish(&mut inner))
+pub async fn add_laser(host: State<'_, Host>, name: String, watts: f64) -> Result<UiState, String> {
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let mut inner = host.lock();
+        guard_busy(&inner)?;
+        inner.error = None;
+        if let Err(error) = inner.store.add_laser(&name, watts) {
+            return Err(host.fail(&mut inner, error.to_string()));
+        }
+        inner.cache.clear();
+        inner.previews.clear();
+        inner.status = "Laser added".to_string();
+        Ok(host.publish(&mut inner))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn rename_laser(
+pub async fn rename_laser(
     host: State<'_, Host>,
     id: String,
     name: String,
     watts: f64,
 ) -> Result<UiState, String> {
-    let mut inner = host.lock();
-    guard_busy(&inner)?;
-    inner.error = None;
-    if let Err(error) = inner.store.rename_laser(&id, &name, watts) {
-        return Err(host.fail(&mut inner, error.to_string()));
-    }
-    inner.status = "Laser renamed".to_string();
-    Ok(host.publish(&mut inner))
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let mut inner = host.lock();
+        guard_busy(&inner)?;
+        inner.error = None;
+        if let Err(error) = inner.store.rename_laser(&id, &name, watts) {
+            return Err(host.fail(&mut inner, error.to_string()));
+        }
+        inner.status = "Laser renamed".to_string();
+        Ok(host.publish(&mut inner))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn remove_laser(host: State<'_, Host>, id: String) -> Result<UiState, String> {
-    let mut inner = host.lock();
-    guard_busy(&inner)?;
-    inner.error = None;
-    if let Err(error) = inner.store.remove_laser(&id) {
-        return Err(host.fail(&mut inner, error.to_string()));
-    }
-    inner.cache.clear();
-    inner.previews.clear();
-    inner.status = "Laser removed".to_string();
-    Ok(host.publish(&mut inner))
+pub async fn remove_laser(host: State<'_, Host>, id: String) -> Result<UiState, String> {
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let mut inner = host.lock();
+        guard_busy(&inner)?;
+        inner.error = None;
+        if let Err(error) = inner.store.remove_laser(&id) {
+            return Err(host.fail(&mut inner, error.to_string()));
+        }
+        inner.cache.clear();
+        inner.previews.clear();
+        inner.status = "Laser removed".to_string();
+        Ok(host.publish(&mut inner))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn select_laser(host: State<'_, Host>, id: String) -> Result<UiState, String> {
-    let mut inner = host.lock();
-    guard_busy(&inner)?;
-    inner.error = None;
-    if let Err(error) = inner.store.select_laser(&id) {
-        return Err(host.fail(&mut inner, error.to_string()));
-    }
-    inner.cache.clear();
-    inner.previews.clear();
-    inner.status = "Laser selected".to_string();
-    Ok(host.publish(&mut inner))
+pub async fn select_laser(host: State<'_, Host>, id: String) -> Result<UiState, String> {
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let mut inner = host.lock();
+        guard_busy(&inner)?;
+        inner.error = None;
+        if let Err(error) = inner.store.select_laser(&id) {
+            return Err(host.fail(&mut inner, error.to_string()));
+        }
+        inner.cache.clear();
+        inner.previews.clear();
+        inner.status = "Laser selected".to_string();
+        Ok(host.publish(&mut inner))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn select_preset(host: State<'_, Host>, id: String) -> Result<UiState, String> {
-    let mut inner = host.lock();
-    guard_busy(&inner)?;
-    inner.error = None;
-    if let Err(error) = inner.store.select(&id) {
-        return Err(host.fail(&mut inner, error.to_string()));
-    }
-    inner.cache.clear();
-    inner.previews.clear();
-    inner.status = "Preset selected".to_string();
-    Ok(host.publish(&mut inner))
+pub async fn select_preset(host: State<'_, Host>, id: String) -> Result<UiState, String> {
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let mut inner = host.lock();
+        guard_busy(&inner)?;
+        inner.error = None;
+        if let Err(error) = inner.store.select(&id) {
+            return Err(host.fail(&mut inner, error.to_string()));
+        }
+        inner.cache.clear();
+        inner.previews.clear();
+        inner.status = "Preset selected".to_string();
+        Ok(host.publish(&mut inner))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn add_preset(
+pub async fn add_preset(
     host: State<'_, Host>,
     name: String,
     laser_id: String,
 ) -> Result<UiState, String> {
-    let mut inner = host.lock();
-    guard_busy(&inner)?;
-    inner.error = None;
-    if let Err(error) = inner.store.add(Preset::new(name, laser_id)) {
-        return Err(host.fail(&mut inner, error.to_string()));
-    }
-    inner.cache.clear();
-    inner.previews.clear();
-    inner.status = "Preset added".to_string();
-    Ok(host.publish(&mut inner))
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let mut inner = host.lock();
+        guard_busy(&inner)?;
+        inner.error = None;
+        if let Err(error) = inner.store.add(Preset::new(name, laser_id)) {
+            return Err(host.fail(&mut inner, error.to_string()));
+        }
+        inner.cache.clear();
+        inner.previews.clear();
+        inner.status = "Preset added".to_string();
+        Ok(host.publish(&mut inner))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn save_preset(host: State<'_, Host>, preset: UiPreset) -> Result<UiState, String> {
-    let mut inner = host.lock();
-    guard_busy(&inner)?;
-    inner.error = None;
+pub async fn save_preset(host: State<'_, Host>, preset: UiPreset) -> Result<UiState, String> {
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let mut inner = host.lock();
+        guard_busy(&inner)?;
+        inner.error = None;
 
-    let calibration = GridCalibrationSpecification::from(&preset.calibration);
-    if let Err(error) = calibration.validate() {
-        return Err(host.fail(&mut inner, error));
-    }
-    let settings = match preset.processing.to_settings() {
-        Ok(settings) => settings,
-        Err(error) => return Err(host.fail(&mut inner, error)),
-    };
-    let existing = match inner
-        .store
-        .presets()
-        .iter()
-        .find(|existing| existing.id == preset.id)
-    {
-        Some(existing) => existing,
-        None => return Err(host.fail(&mut inner, "Preset not found.".to_string())),
-    };
-    if existing.laser_id != preset.laser_id {
-        return Err(host.fail(
-            &mut inner,
-            "A preset cannot move to another laser.".to_string(),
-        ));
-    }
-    let updated = Preset {
-        id: preset.id,
-        laser_id: existing.laser_id.clone(),
-        name: preset.name,
-        note: preset.note,
-        calibration,
-        processing: settings,
-        speed: preset.speed,
-        power_percent: preset.power_percent,
-        dpi: preset.dpi,
-        calibration_photo: existing.calibration_photo.clone(),
-        scan_source_photo: existing.scan_source_photo.clone(),
-        scan_crop: existing.scan_crop.clone(),
-    };
-    if let Err(error) = inner.store.update(updated) {
-        return Err(host.fail(&mut inner, error.to_string()));
-    }
-    inner.cache.clear();
-    inner.previews.clear();
-    inner.status = "Preset saved".to_string();
-    Ok(host.publish(&mut inner))
+        let calibration = GridCalibrationSpecification::from(&preset.calibration);
+        if let Err(error) = calibration.validate() {
+            return Err(host.fail(&mut inner, error));
+        }
+        let settings = match preset.processing.to_settings() {
+            Ok(settings) => settings,
+            Err(error) => return Err(host.fail(&mut inner, error)),
+        };
+        let existing = match inner
+            .store
+            .presets()
+            .iter()
+            .find(|existing| existing.id == preset.id)
+        {
+            Some(existing) => existing,
+            None => return Err(host.fail(&mut inner, "Preset not found.".to_string())),
+        };
+        if existing.laser_id != preset.laser_id {
+            return Err(host.fail(
+                &mut inner,
+                "A preset cannot move to another laser.".to_string(),
+            ));
+        }
+        let updated = Preset {
+            id: preset.id,
+            laser_id: existing.laser_id.clone(),
+            name: preset.name,
+            note: preset.note,
+            calibration,
+            processing: settings,
+            speed: preset.speed,
+            power_percent: preset.power_percent,
+            dpi: preset.dpi,
+            calibration_photo: existing.calibration_photo.clone(),
+            scan_source_photo: existing.scan_source_photo.clone(),
+            scan_crop: existing.scan_crop.clone(),
+        };
+        if let Err(error) = inner.store.update(updated) {
+            return Err(host.fail(&mut inner, error.to_string()));
+        }
+        inner.cache.clear();
+        inner.previews.clear();
+        inner.status = "Preset saved".to_string();
+        Ok(host.publish(&mut inner))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn remove_preset(host: State<'_, Host>, id: String) -> Result<UiState, String> {
-    let mut inner = host.lock();
-    guard_busy(&inner)?;
-    inner.error = None;
-    if let Err(error) = inner.store.remove(&id) {
-        return Err(host.fail(&mut inner, error.to_string()));
-    }
-    inner.cache.clear();
-    inner.previews.clear();
-    inner.status = "Preset removed".to_string();
-    Ok(host.publish(&mut inner))
+pub async fn remove_preset(host: State<'_, Host>, id: String) -> Result<UiState, String> {
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let mut inner = host.lock();
+        guard_busy(&inner)?;
+        inner.error = None;
+        if let Err(error) = inner.store.remove(&id) {
+            return Err(host.fail(&mut inner, error.to_string()));
+        }
+        inner.cache.clear();
+        inner.previews.clear();
+        inner.status = "Preset removed".to_string();
+        Ok(host.publish(&mut inner))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -950,17 +1010,21 @@ pub async fn import_scan(
     id: String,
     path: String,
 ) -> Result<UiState, String> {
-    let mut inner = host.lock();
-    guard_busy(&inner)?;
-    inner.error = None;
-    if let Err(error) = inner.store.import_calibration_photo(&id, Path::new(&path)) {
-        return Err(host.fail(&mut inner, error.to_string()));
-    }
-    let _ = inner.store.keep_scan_source(&id, Path::new(&path));
-    inner.cache.clear();
-    inner.previews.clear();
-    inner.status = "Calibration scan imported".to_string();
-    Ok(host.publish(&mut inner))
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let mut inner = host.lock();
+        guard_busy(&inner)?;
+        inner.error = None;
+        if let Err(error) = inner.store.import_calibration_photo(&id, Path::new(&path)) {
+            return Err(host.fail(&mut inner, error.to_string()));
+        }
+        let _ = inner.store.keep_scan_source(&id, Path::new(&path));
+        inner.cache.clear();
+        inner.previews.clear();
+        inner.status = "Calibration scan imported".to_string();
+        Ok(host.publish(&mut inner))
+    })
+    .await
 }
 
 fn crop_shape<'a>(
@@ -993,24 +1057,28 @@ pub async fn import_scan_crop(
     height: i64,
     corners: Option<Vec<[f64; 2]>>,
 ) -> Result<UiState, String> {
-    let mut inner = host.lock();
-    guard_busy(&inner)?;
-    inner.error = None;
-    let result = import_crop_to_store(
-        &mut inner.store,
-        &id,
-        Path::new(&path),
-        angle.unwrap_or_default(),
-        crop_shape(&corners, x, y, width, height),
-    );
-    if let Err(error) = result {
-        return Err(host.fail(&mut inner, error));
-    }
-    let _ = inner.store.keep_scan_source(&id, Path::new(&path));
-    inner.cache.clear();
-    inner.previews.clear();
-    inner.status = "Calibration scan imported".to_string();
-    Ok(host.publish(&mut inner))
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let mut inner = host.lock();
+        guard_busy(&inner)?;
+        inner.error = None;
+        let result = import_crop_to_store(
+            &mut inner.store,
+            &id,
+            Path::new(&path),
+            angle.unwrap_or_default(),
+            crop_shape(&corners, x, y, width, height),
+        );
+        if let Err(error) = result {
+            return Err(host.fail(&mut inner, error));
+        }
+        let _ = inner.store.keep_scan_source(&id, Path::new(&path));
+        inner.cache.clear();
+        inner.previews.clear();
+        inner.status = "Calibration scan imported".to_string();
+        Ok(host.publish(&mut inner))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1024,69 +1092,73 @@ pub async fn import_scan_crop_preset(
     height: i64,
     corners: Option<Vec<[f64; 2]>>,
 ) -> Result<UiState, String> {
-    let (source_path, store_root, target_width, target_height) = {
-        let mut inner = host.lock();
-        guard_busy(&inner)?;
-        inner.error = None;
-        let preset = match inner.store.presets().iter().find(|preset| preset.id == id) {
-            Some(preset) => preset,
-            None => return Err(host.fail(&mut inner, "Preset not found.".to_string())),
-        };
-        let source_path = match inner.store.scan_path(preset) {
-            Some(path) => path,
-            None => {
-                return Err(host.fail(
-                    &mut inner,
-                    "This preset has no calibration scan.".to_string(),
-                ));
-            }
-        };
-        let (target_width, target_height) = match preset.calibration.dimensions() {
-            Ok(dimensions) => dimensions,
-            Err(error) => return Err(host.fail(&mut inner, error)),
-        };
-        let archive_dir = inner.store.archive_dir();
-        let store_root = match archive_dir.parent() {
-            Some(path) => path.to_path_buf(),
-            None => {
-                return Err(host.fail(
-                    &mut inner,
-                    "Could not locate preset store directory.".to_string(),
-                ));
-            }
-        };
-        (source_path, store_root, target_width, target_height)
-    };
-    let staging = match stage_preset_crop(
-        &source_path,
-        &store_root,
-        target_width,
-        target_height,
-        angle.unwrap_or_default(),
-        crop_shape(&corners, x, y, width, height),
-    ) {
-        Ok(path) => path,
-        Err(error) => {
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let (source_path, store_root, target_width, target_height) = {
             let mut inner = host.lock();
+            guard_busy(&inner)?;
+            inner.error = None;
+            let preset = match inner.store.presets().iter().find(|preset| preset.id == id) {
+                Some(preset) => preset,
+                None => return Err(host.fail(&mut inner, "Preset not found.".to_string())),
+            };
+            let source_path = match inner.store.scan_path(preset) {
+                Some(path) => path,
+                None => {
+                    return Err(host.fail(
+                        &mut inner,
+                        "This preset has no calibration scan.".to_string(),
+                    ));
+                }
+            };
+            let (target_width, target_height) = match preset.calibration.dimensions() {
+                Ok(dimensions) => dimensions,
+                Err(error) => return Err(host.fail(&mut inner, error)),
+            };
+            let archive_dir = inner.store.archive_dir();
+            let store_root = match archive_dir.parent() {
+                Some(path) => path.to_path_buf(),
+                None => {
+                    return Err(host.fail(
+                        &mut inner,
+                        "Could not locate preset store directory.".to_string(),
+                    ));
+                }
+            };
+            (source_path, store_root, target_width, target_height)
+        };
+        let staging = match stage_preset_crop(
+            &source_path,
+            &store_root,
+            target_width,
+            target_height,
+            angle.unwrap_or_default(),
+            crop_shape(&corners, x, y, width, height),
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                let mut inner = host.lock();
+                return Err(host.fail(&mut inner, error));
+            }
+        };
+        let mut inner = host.lock();
+        let imported = inner
+            .store
+            .import_calibration_photo(&id, &staging)
+            .map_err(|error| error.to_string());
+        let _ = std::fs::remove_file(staging);
+        if let Err(error) = imported {
             return Err(host.fail(&mut inner, error));
         }
-    };
-    let mut inner = host.lock();
-    let imported = inner
-        .store
-        .import_calibration_photo(&id, &staging)
-        .map_err(|error| error.to_string());
-    let _ = std::fs::remove_file(staging);
-    if let Err(error) = imported {
-        return Err(host.fail(&mut inner, error));
-    }
-    let _ = inner
-        .store
-        .set_scan_crop(&id, Some(scan_crop(angle, x, y, width, height, &corners)));
-    inner.cache.clear();
-    inner.previews.clear();
-    inner.status = "Calibration scan updated".to_string();
-    Ok(host.publish(&mut inner))
+        let _ = inner
+            .store
+            .set_scan_crop(&id, Some(scan_crop(angle, x, y, width, height, &corners)));
+        inner.cache.clear();
+        inner.previews.clear();
+        inner.status = "Calibration scan updated".to_string();
+        Ok(host.publish(&mut inner))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1100,86 +1172,94 @@ pub async fn import_scan_crop_source(
     height: i64,
     corners: Option<Vec<[f64; 2]>>,
 ) -> Result<UiState, String> {
-    let (source_path, store_root, target_width, target_height) = {
-        let mut inner = host.lock();
-        guard_busy(&inner)?;
-        inner.error = None;
-        let preset = match inner.store.presets().iter().find(|preset| preset.id == id) {
-            Some(preset) => preset,
-            None => return Err(host.fail(&mut inner, "Preset not found.".to_string())),
-        };
-        let source_path = match inner
-            .store
-            .source_path(preset)
-            .or_else(|| inner.store.scan_path(preset))
-        {
-            Some(path) => path,
-            None => {
-                return Err(host.fail(
-                    &mut inner,
-                    "This preset has no calibration scan.".to_string(),
-                ));
-            }
-        };
-        let (target_width, target_height) = match preset.calibration.dimensions() {
-            Ok(dimensions) => dimensions,
-            Err(error) => return Err(host.fail(&mut inner, error)),
-        };
-        let store_root = match inner.store.archive_dir().parent() {
-            Some(path) => path.to_path_buf(),
-            None => {
-                return Err(host.fail(
-                    &mut inner,
-                    "Could not locate preset store directory.".to_string(),
-                ));
-            }
-        };
-        (source_path, store_root, target_width, target_height)
-    };
-    let staging = match stage_preset_crop(
-        &source_path,
-        &store_root,
-        target_width,
-        target_height,
-        angle.unwrap_or_default(),
-        crop_shape(&corners, x, y, width, height),
-    ) {
-        Ok(path) => path,
-        Err(error) => {
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let (source_path, store_root, target_width, target_height) = {
             let mut inner = host.lock();
+            guard_busy(&inner)?;
+            inner.error = None;
+            let preset = match inner.store.presets().iter().find(|preset| preset.id == id) {
+                Some(preset) => preset,
+                None => return Err(host.fail(&mut inner, "Preset not found.".to_string())),
+            };
+            let source_path = match inner
+                .store
+                .source_path(preset)
+                .or_else(|| inner.store.scan_path(preset))
+            {
+                Some(path) => path,
+                None => {
+                    return Err(host.fail(
+                        &mut inner,
+                        "This preset has no calibration scan.".to_string(),
+                    ));
+                }
+            };
+            let (target_width, target_height) = match preset.calibration.dimensions() {
+                Ok(dimensions) => dimensions,
+                Err(error) => return Err(host.fail(&mut inner, error)),
+            };
+            let store_root = match inner.store.archive_dir().parent() {
+                Some(path) => path.to_path_buf(),
+                None => {
+                    return Err(host.fail(
+                        &mut inner,
+                        "Could not locate preset store directory.".to_string(),
+                    ));
+                }
+            };
+            (source_path, store_root, target_width, target_height)
+        };
+        let staging = match stage_preset_crop(
+            &source_path,
+            &store_root,
+            target_width,
+            target_height,
+            angle.unwrap_or_default(),
+            crop_shape(&corners, x, y, width, height),
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                let mut inner = host.lock();
+                return Err(host.fail(&mut inner, error));
+            }
+        };
+        let mut inner = host.lock();
+        let imported = inner
+            .store
+            .import_calibration_photo(&id, &staging)
+            .map_err(|error| error.to_string());
+        let _ = std::fs::remove_file(staging);
+        if let Err(error) = imported {
             return Err(host.fail(&mut inner, error));
         }
-    };
-    let mut inner = host.lock();
-    let imported = inner
-        .store
-        .import_calibration_photo(&id, &staging)
-        .map_err(|error| error.to_string());
-    let _ = std::fs::remove_file(staging);
-    if let Err(error) = imported {
-        return Err(host.fail(&mut inner, error));
-    }
-    let _ = inner
-        .store
-        .set_scan_crop(&id, Some(scan_crop(angle, x, y, width, height, &corners)));
-    inner.cache.clear();
-    inner.previews.clear();
-    inner.status = "Calibration scan updated".to_string();
-    Ok(host.publish(&mut inner))
+        let _ = inner
+            .store
+            .set_scan_crop(&id, Some(scan_crop(angle, x, y, width, height, &corners)));
+        inner.cache.clear();
+        inner.previews.clear();
+        inner.status = "Calibration scan updated".to_string();
+        Ok(host.publish(&mut inner))
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn remove_scan(host: State<'_, Host>, id: String) -> Result<UiState, String> {
-    let mut inner = host.lock();
-    guard_busy(&inner)?;
-    inner.error = None;
-    if let Err(error) = inner.store.detach_calibration_photo(&id) {
-        return Err(host.fail(&mut inner, error.to_string()));
-    }
-    inner.cache.clear();
-    inner.previews.clear();
-    inner.status = "Calibration scan moved to the archive".to_string();
-    Ok(host.publish(&mut inner))
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let mut inner = host.lock();
+        guard_busy(&inner)?;
+        inner.error = None;
+        if let Err(error) = inner.store.detach_calibration_photo(&id) {
+            return Err(host.fail(&mut inner, error.to_string()));
+        }
+        inner.cache.clear();
+        inner.previews.clear();
+        inner.status = "Calibration scan moved to the archive".to_string();
+        Ok(host.publish(&mut inner))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1188,83 +1268,99 @@ pub async fn export_gauge(
     id: String,
     path: String,
 ) -> Result<UiState, String> {
-    let mut inner = host.lock();
-    guard_busy(&inner)?;
-    inner.error = None;
-    let preset = match inner.store.presets().iter().find(|preset| preset.id == id) {
-        Some(preset) => preset,
-        None => return Err(host.fail(&mut inner, "Preset not found.".to_string())),
-    };
-    let gauge = match preset.calibration.generate() {
-        Ok(gauge) => gauge,
-        Err(error) => return Err(host.fail(&mut inner, error)),
-    };
-    if let Err(error) = save_png(&gauge, Path::new(&path)) {
-        return Err(host.fail(&mut inner, error));
-    }
-    inner.status = "Calibration image exported".to_string();
-    Ok(host.publish(&mut inner))
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let mut inner = host.lock();
+        guard_busy(&inner)?;
+        inner.error = None;
+        let preset = match inner.store.presets().iter().find(|preset| preset.id == id) {
+            Some(preset) => preset,
+            None => return Err(host.fail(&mut inner, "Preset not found.".to_string())),
+        };
+        let gauge = match preset.calibration.generate() {
+            Ok(gauge) => gauge,
+            Err(error) => return Err(host.fail(&mut inner, error)),
+        };
+        if let Err(error) = save_png(&gauge, Path::new(&path)) {
+            return Err(host.fail(&mut inner, error));
+        }
+        inner.status = "Calibration image exported".to_string();
+        Ok(host.publish(&mut inner))
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn preset_preview(host: State<'_, Host>, id: String) -> Result<PresetPreview, String> {
-    // Resolve inputs and check the cache under the lock, then compute without it: a page
-    // reload's get_state must never wait behind a gauge render.
-    let (spec, scan_path) = {
-        let inner = host.lock();
-        if let Some(cached) = inner.previews.get(&id) {
-            return Ok(cached.clone());
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        // Resolve inputs and check the cache under the lock, then compute without it: a page
+        // reload's get_state must never wait behind a gauge render.
+        let (spec, scan_path) = {
+            let inner = host.lock();
+            if let Some(cached) = inner.previews.get(&id) {
+                return Ok(cached.clone());
+            }
+            let preset = inner
+                .store
+                .presets()
+                .iter()
+                .find(|preset| preset.id == id)
+                .ok_or_else(|| "Preset not found.".to_string())?;
+            (preset.calibration.clone(), inner.store.scan_path(preset))
+        };
+        let preview = build_preset_preview(&spec, scan_path)?;
+        if let Ok(mut inner) = host.inner.lock() {
+            inner.previews.insert(id, preview.clone());
         }
-        let preset = inner
-            .store
-            .presets()
-            .iter()
-            .find(|preset| preset.id == id)
-            .ok_or_else(|| "Preset not found.".to_string())?;
-        (preset.calibration.clone(), inner.store.scan_path(preset))
-    };
-    let preview = build_preset_preview(&spec, scan_path)?;
-    if let Ok(mut inner) = host.inner.lock() {
-        inner.previews.insert(id, preview.clone());
-    }
-    Ok(preview)
+        Ok(preview)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn open_scan_archive(host: State<'_, Host>) -> Result<UiState, String> {
-    let mut inner = host.lock();
-    guard_busy(&inner)?;
-    inner.error = None;
-    let dir = inner.store.archive_dir();
-    if let Err(error) = std::fs::create_dir_all(&dir) {
-        return Err(host.fail(
-            &mut inner,
-            format!("Could not create scan archive: {error}"),
-        ));
-    }
-    #[cfg(windows)]
-    let opened = std::process::Command::new("explorer").arg(&dir).spawn();
-    #[cfg(not(windows))]
-    let opened = std::process::Command::new("xdg-open").arg(&dir).spawn();
-    if let Err(error) = opened {
-        return Err(host.fail(&mut inner, format!("Could not open scan archive: {error}")));
-    }
-    inner.status = "Scan archive opened".to_string();
-    Ok(host.publish(&mut inner))
+pub async fn open_scan_archive(host: State<'_, Host>) -> Result<UiState, String> {
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let mut inner = host.lock();
+        guard_busy(&inner)?;
+        inner.error = None;
+        let dir = inner.store.archive_dir();
+        if let Err(error) = std::fs::create_dir_all(&dir) {
+            return Err(host.fail(
+                &mut inner,
+                format!("Could not create scan archive: {error}"),
+            ));
+        }
+        #[cfg(windows)]
+        let opened = std::process::Command::new("explorer").arg(&dir).spawn();
+        #[cfg(not(windows))]
+        let opened = std::process::Command::new("xdg-open").arg(&dir).spawn();
+        if let Err(error) = opened {
+            return Err(host.fail(&mut inner, format!("Could not open scan archive: {error}")));
+        }
+        inner.status = "Scan archive opened".to_string();
+        Ok(host.publish(&mut inner))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn clear_scan_archive(host: State<'_, Host>) -> Result<UiState, String> {
-    let mut inner = host.lock();
-    guard_busy(&inner)?;
-    inner.error = None;
-    match inner.store.clear_archive() {
-        Ok(count) => {
-            inner.status = format!("Cleared {count} archived scan(s)");
-            Ok(host.publish(&mut inner))
+pub async fn clear_scan_archive(host: State<'_, Host>) -> Result<UiState, String> {
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let mut inner = host.lock();
+        guard_busy(&inner)?;
+        inner.error = None;
+        match inner.store.clear_archive() {
+            Ok(count) => {
+                inner.status = format!("Cleared {count} archived scan(s)");
+                Ok(host.publish(&mut inner))
+            }
+            Err(error) => Err(host.fail(&mut inner, error.to_string())),
         }
-        Err(error) => Err(host.fail(&mut inner, error.to_string())),
-    }
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1274,63 +1370,67 @@ pub async fn process_photo(
     tab: String,
     path: String,
 ) -> Result<ProcessResult, String> {
-    let mut inner = host.lock();
-    guard_busy(&inner)?;
-    inner.busy = true;
-    inner.error = None;
-    inner.status = "Processing photo".to_string();
-    host.publish(&mut inner);
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let mut inner = host.lock();
+        guard_busy(&inner)?;
+        inner.busy = true;
+        inner.error = None;
+        inner.status = "Processing photo".to_string();
+        host.publish(&mut inner);
 
-    let outcome = (|| -> Result<(String, GrayImage, GrayImage, String, u32, u32), String> {
-        let (preset_id, spec, settings, scan_path) = selected_scan(&inner)?;
-        let calibration = load_calibration(&spec, &scan_path)?;
-        let photo = processing::load_rgb(Path::new(&path))?;
-        let processed = processing::process_photo(&photo, &calibration, &settings)?;
-        let report = calibration.report_csv();
-        let width = processed.engraving.width();
-        let height = processed.engraving.height();
-        Ok((
-            preset_id,
-            processed.engraving,
-            processed.simulation,
-            report,
-            width,
-            height,
-        ))
-    })();
+        let outcome = (|| -> Result<(String, GrayImage, GrayImage, String, u32, u32), String> {
+            let (preset_id, spec, settings, scan_path) = selected_scan(&inner)?;
+            let calibration = load_calibration(&spec, &scan_path)?;
+            let photo = processing::load_rgb(Path::new(&path))?;
+            let processed = processing::process_photo(&photo, &calibration, &settings)?;
+            let report = calibration.report_csv();
+            let width = processed.engraving.width();
+            let height = processed.engraving.height();
+            Ok((
+                preset_id,
+                processed.engraving,
+                processed.simulation,
+                report,
+                width,
+                height,
+            ))
+        })();
 
-    let (preset_id, engraving, simulation, report, width, height) = match outcome {
-        Ok(values) => values,
-        Err(error) => return Err(host.fail(&mut inner, error)),
-    };
+        let (preset_id, engraving, simulation, report, width, height) = match outcome {
+            Ok(values) => values,
+            Err(error) => return Err(host.fail(&mut inner, error)),
+        };
 
-    let result = match (
-        data_url(&preview_image(&engraving)),
-        data_url(&preview_image(&simulation)),
-    ) {
-        (Ok(preview), Ok(simulation)) => ProcessResult {
-            preview_data_url: preview,
-            simulation_data_url: simulation,
-            width,
-            height,
-            report_csv: report.clone(),
-        },
-        (Err(error), _) | (_, Err(error)) => return Err(host.fail(&mut inner, error)),
-    };
+        let result = match (
+            data_url(&preview_image(&engraving)),
+            data_url(&preview_image(&simulation)),
+        ) {
+            (Ok(preview), Ok(simulation)) => ProcessResult {
+                preview_data_url: preview,
+                simulation_data_url: simulation,
+                width,
+                height,
+                report_csv: report.clone(),
+            },
+            (Err(error), _) | (_, Err(error)) => return Err(host.fail(&mut inner, error)),
+        };
 
-    inner.cache.insert(
-        tab_key(&window, &tab),
-        ProcessCache {
-            preset_id,
-            engraving,
-            simulation,
-            report,
-        },
-    );
-    inner.busy = false;
-    inner.status = format!("Processed {width}x{height} engraving");
-    host.publish(&mut inner);
-    Ok(result)
+        inner.cache.insert(
+            tab_key(&window, &tab),
+            ProcessCache {
+                preset_id,
+                engraving,
+                simulation,
+                report,
+            },
+        );
+        inner.busy = false;
+        inner.status = format!("Processed {width}x{height} engraving");
+        host.publish(&mut inner);
+        Ok(result)
+    })
+    .await
 }
 
 fn current_preset(inner: &Inner) -> Option<String> {
@@ -1385,9 +1485,13 @@ pub async fn save_engraving(
     tab: String,
     path: String,
 ) -> Result<UiState, String> {
-    write_cached(&host, &window, &tab, &path, "Engraving", |cache| {
-        cache.engraving.clone()
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        write_cached(&host, &window, &tab, &path, "Engraving", |cache| {
+            cache.engraving.clone()
+        })
     })
+    .await
 }
 
 #[tauri::command]
@@ -1397,9 +1501,13 @@ pub async fn save_simulation(
     tab: String,
     path: String,
 ) -> Result<UiState, String> {
-    write_cached(&host, &window, &tab, &path, "Simulation", |cache| {
-        cache.simulation.clone()
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        write_cached(&host, &window, &tab, &path, "Simulation", |cache| {
+            cache.simulation.clone()
+        })
     })
+    .await
 }
 
 #[tauri::command]
@@ -1409,37 +1517,41 @@ pub async fn save_report(
     tab: String,
     path: String,
 ) -> Result<UiState, String> {
-    let mut inner = host.lock();
-    guard_busy(&inner)?;
-    inner.error = None;
-    let key = tab_key(&window, &tab);
-    let cached = inner
-        .cache
-        .get(&key)
-        .map(|cache| (cache.preset_id.clone(), cache.report.clone()));
-    let report = match cached {
-        Some((preset_id, report)) => {
-            if current_preset(&inner).as_deref() != Some(preset_id.as_str()) {
+    let host = host.inner().clone();
+    run_blocking(host, move |host| {
+        let mut inner = host.lock();
+        guard_busy(&inner)?;
+        inner.error = None;
+        let key = tab_key(&window, &tab);
+        let cached = inner
+            .cache
+            .get(&key)
+            .map(|cache| (cache.preset_id.clone(), cache.report.clone()));
+        let report = match cached {
+            Some((preset_id, report)) => {
+                if current_preset(&inner).as_deref() != Some(preset_id.as_str()) {
+                    return Err(host.fail(
+                        &mut inner,
+                        "The result belongs to a different preset. Process the photo again."
+                            .to_string(),
+                    ));
+                }
+                report
+            }
+            None => {
                 return Err(host.fail(
                     &mut inner,
-                    "The result belongs to a different preset. Process the photo again."
-                        .to_string(),
-                ));
+                    "Process a photo before saving its report.".to_string(),
+                ))
             }
-            report
+        };
+        if let Err(error) = std::fs::write(Path::new(&path), report) {
+            return Err(host.fail(&mut inner, format!("Could not write {path}: {error}")));
         }
-        None => {
-            return Err(host.fail(
-                &mut inner,
-                "Process a photo before saving its report.".to_string(),
-            ))
-        }
-    };
-    if let Err(error) = std::fs::write(Path::new(&path), report) {
-        return Err(host.fail(&mut inner, format!("Could not write {path}: {error}")));
-    }
-    inner.status = "Calibration report saved".to_string();
-    Ok(host.publish(&mut inner))
+        inner.status = "Calibration report saved".to_string();
+        Ok(host.publish(&mut inner))
+    })
+    .await
 }
 
 #[tauri::command]

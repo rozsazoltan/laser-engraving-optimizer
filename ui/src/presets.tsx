@@ -1,4 +1,4 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createEffect, createSignal } from "solid-js";
 import { COLOR_METHODS, formatPower, laserLabel, powerWatts, type CalibrationSpec, type ColorMethod, type Draft, type Laser, type Preset, type PresetPreview, type ProcessingSettings, type ScanGeometry, type ScanSource, type SpeedUnit } from "./types";
 import { Field, NumberField } from "./fields";
 import { SampleOverlay, ScanCropEditor, type Crop } from "./scancrop";
@@ -12,8 +12,10 @@ type Props = {
   dirty: boolean;
   busy: boolean;
   working: string | null;
+  operationError: string | null;
   preview: PresetPreview | null;
   previewLoading: boolean;
+  previewError: string | null;
   geometry: ScanGeometry | null;
   cropSource: ScanSource | null;
   cropCanImport: boolean;
@@ -51,6 +53,17 @@ function TrashIcon() {
       <path d="M6.7 7v4M9.3 7v4" />
     </svg>
   );
+}
+
+function PreviewImage(props: { src: string; alt: string }) {
+  const [failed, setFailed] = createSignal(false);
+  createEffect(() => {
+    props.src;
+    setFailed(false);
+  });
+  return <Show when={!failed()} fallback={<div class="preview-error" role="status">Could not display preview</div>}>
+    <img src={props.src} alt={props.alt} onError={() => setFailed(true)} />
+  </Show>;
 }
 
 export function PresetsArea(props: Props) {
@@ -106,7 +119,7 @@ export function PresetsArea(props: Props) {
             </select>
           </label>
           <button type="button" class="btn" disabled={props.busy || !props.selectedLaser} onClick={props.onAdd}>
-            New preset
+            {props.working === "preset-add" ? "Creating…" : "New preset"}
           </button>
         </div>
       </div>
@@ -118,7 +131,7 @@ export function PresetsArea(props: Props) {
             <div class="preset-side empty-side">
               <p class="hint">No presets on this laser yet.</p>
               <button type="button" class="btn small" disabled={props.busy} onClick={props.onAdd}>
-                Create the first preset
+                {props.working === "preset-add" ? "Creating…" : "Create the first preset"}
               </button>
             </div>
           }
@@ -325,12 +338,17 @@ export function PresetsArea(props: Props) {
                   </div>
                   <div class="row-actions">
                     <button type="button" class="btn" disabled={props.busy || !!props.cropSource} onClick={props.onImportScan}>
-                      {props.working === "scan-source" ? "Loading scan…" : "Import calibration scan…"}
+                      {props.working === "scan-picker" ? "Choose scan…" : "Import calibration scan…"}
                     </button>
                     <button type="button" class="btn" disabled={props.busy} onClick={props.onExportGauge}>
-                      {props.working === "gauge" ? "Exporting…" : "Export gauge PNG…"}
+                      {props.working === "gauge-picker" ? "Choose location…" : props.working === "gauge" ? "Exporting…" : "Export gauge PNG…"}
                     </button>
                   </div>
+                  <Show when={!props.cropSource && ["scan-picker", "scan-source", "scan-remove"].includes(props.working ?? "")}>
+                    <p class="operation-note" role="status">
+                      {props.working === "scan-picker" ? "Choose a calibration scan…" : props.working === "scan-source" ? "Loading calibration scan…" : "Moving calibration scan to archive…"}
+                    </p>
+                  </Show>
                   <p class="hint">
                     Engrave the exported gauge, then import a cropped, aligned photo of it at exactly{" "}
                     <strong class="mono">
@@ -341,7 +359,7 @@ export function PresetsArea(props: Props) {
                   <Show when={props.dirty}>
                     <p class="hint warn">Scans and gauges use the saved calibration. Save to apply unsaved values.</p>
                   </Show>
-                  <div class="scan-previews" aria-live="polite">
+                  <div class="scan-previews">
                     <div class="scan-preview-slot">
                       <div class="scan-slot-head">
                         <span class="field-label">Calibration scan</span>
@@ -351,7 +369,7 @@ export function PresetsArea(props: Props) {
                           disabled={props.busy || !props.canEditScan}
                           onClick={props.onEditScan}
                         >
-                          Edit scan…
+                          {props.working === "scan-source" ? "Opening…" : "Edit scan…"}
                         </button>
                         <button
                           type="button"
@@ -364,9 +382,9 @@ export function PresetsArea(props: Props) {
                           <TrashIcon />
                         </button>
                       </div>
-                      <Show when={props.preview?.scan_data_url} fallback={<div class="scan-placeholder" style={{ "aspect-ratio": `${gaugeWidth()} / ${gaugeHeight()}` }}>No calibration scan yet</div>}>
+                      <Show when={props.preview?.scan_data_url} fallback={<div class="scan-placeholder" role={props.previewLoading ? "status" : undefined} style={{ "aspect-ratio": `${gaugeWidth()} / ${gaugeHeight()}` }}>{props.previewLoading ? "Loading calibration scan…" : props.previewError ? "Calibration preview failed" : "No calibration scan yet"}</div>}>
                         {(src) => <div class="scan-preview-frame" style={{ width: `min(100%, ${Math.round(220 * gaugeWidth() / gaugeHeight())}px)` }}>
-                          <img src={src()} alt="Calibration scan preview" />
+                          <PreviewImage src={src()} alt="Calibration scan preview" />
                           <Show when={props.geometry}>{(geometry) => <SampleOverlay geometry={geometry()} />}</Show>
                         </div>}
                       </Show>
@@ -375,15 +393,16 @@ export function PresetsArea(props: Props) {
                       <div class="scan-slot-head">
                         <span class="field-label">Sample gauge</span>
                       </div>
-                      <Show when={props.preview} fallback={<div class="scan-placeholder" style={{ "aspect-ratio": `${gaugeWidth()} / ${gaugeHeight()}` }}>{props.previewLoading ? "Loading preview…" : "Preview unavailable"}</div>}>
+                      <Show when={props.preview} fallback={<div class="scan-placeholder" role="status" style={{ "aspect-ratio": `${gaugeWidth()} / ${gaugeHeight()}` }}>{props.previewLoading ? "Loading preview…" : props.previewError ? "Preview unavailable" : "Preview not ready"}</div>}>
                         {(preview) => <div class="scan-preview-frame" style={{ width: `min(100%, ${Math.round(220 * preview().width / preview().height)}px)` }}>
-                          <img src={preview().gauge_data_url} alt="Sample gauge preview" />
+                          <PreviewImage src={preview().gauge_data_url} alt="Sample gauge preview" />
                           <Show when={props.geometry}>{(geometry) => <SampleOverlay geometry={geometry()} />}</Show>
                         </div>}
                       </Show>
                     </div>
                   </div>
                   <p class="hint mono preview-size">{props.preview ? `${props.preview.width} × ${props.preview.height} px` : `${gaugeWidth()} × ${gaugeHeight()} px`}{props.previewLoading ? " · Updating preview…" : ""}</p>
+                  <Show when={props.previewError && !props.previewLoading}><p class="hint warn" role="status">Preview could not be updated: {props.previewError}</p></Show>
                   <div class="sample-legend">
                     <span class="sample-swatch" /> Sampled pixels
                     <button
@@ -407,7 +426,7 @@ export function PresetsArea(props: Props) {
                     </p>
                   </Show>
                   <div class="row-actions">
-                    <button type="button" class="btn" disabled={props.busy} onClick={props.onOpenArchive}>Open archive</button>
+                    <button type="button" class="btn" disabled={props.busy} onClick={props.onOpenArchive}>{props.working === "archive-open" ? "Opening archive…" : "Open archive"}</button>
                     <button type="button" class="btn icon" title="Empty the scan archive" aria-label="Empty the scan archive" disabled={props.busy} onClick={() => setConfirmClear(true)}>
                       <TrashIcon />
                     </button>
@@ -416,8 +435,11 @@ export function PresetsArea(props: Props) {
                     <div class="archive-confirm" role="alert">
                       <span>Empty archived scans?</span>
                       <button type="button" class="btn small" onClick={() => setConfirmClear(false)}>Keep</button>
-                      <button type="button" class="btn small danger" disabled={props.busy} onClick={() => { setConfirmClear(false); props.onClearArchive(); }}>Empty archive</button>
+                      <button type="button" class="btn small danger" disabled={props.busy} onClick={() => { setConfirmClear(false); props.onClearArchive(); }}>{props.working === "archive-clear" ? "Emptying…" : "Empty archive"}</button>
                     </div>
+                  </Show>
+                  <Show when={props.working === "archive-clear"}>
+                    <p class="operation-note" role="status">Emptying scan archive…</p>
                   </Show>
                 </div>
               </div>
@@ -436,6 +458,8 @@ export function PresetsArea(props: Props) {
           canImport={props.cropCanImport}
           editingSaved={props.cropEditingSaved}
           sourceMode={props.cropSourceMode}
+          working={props.working}
+          operationError={props.operationError}
           onSourceMode={props.onCropSource}
           onImport={props.onCropImport}
           onCancel={props.onCropCancel}
