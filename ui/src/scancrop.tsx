@@ -1,12 +1,16 @@
-import { For, createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import { For, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { ScanGeometry, ScanSource } from "./types";
 
 type Crop = { x: number; y: number; width: number; height: number };
 
-export function SampleOverlay(props: { geometry: ScanGeometry; class?: string }) {
+export function SampleOverlay(props: { geometry: ScanGeometry; class?: string; angle?: number }) {
+  const patches = createMemo(() => {
+    props.angle;
+    return props.geometry.patches;
+  });
   return (
     <svg class={`sample-overlay ${props.class ?? ""}`} viewBox={`0 0 ${props.geometry.width} ${props.geometry.height}`} preserveAspectRatio="none" aria-label="Sampled pixels" role="img">
-      <For each={props.geometry.patches}>
+      <For each={patches()}>
         {(patch) => (
           <>
             <rect class="sample-strip" x={patch.left.x} y={patch.left.y} width={patch.left.width} height={patch.left.height} />
@@ -77,11 +81,13 @@ export function ScanCropEditor(props: Props) {
   const [crop, setCrop] = createSignal(initialCrop(canvasSize(), ratio()));
   const [zoom, setZoom] = createSignal(1);
   const [drag, setDrag] = createSignal<
-    | { mode: "move" | "resize"; px: number; py: number; crop: Crop }
+    | { mode: "move" | "resize"; px: number; py: number; scale: number; crop: Crop }
     | { mode: "rotate"; pointerAngle: number; startAngle: number }
     | null
   >(null);
   let canvasElement: HTMLDivElement | undefined;
+  let pendingCrop: Crop | null = null;
+  let cropFrame = 0;
 
   createEffect(() => {
     const source = props.source;
@@ -98,14 +104,21 @@ export function ScanCropEditor(props: Props) {
   };
   onMount(() => window.addEventListener("keydown", closeOnEscape));
   onCleanup(() => window.removeEventListener("keydown", closeOnEscape));
+  onCleanup(() => {
+    if (cropFrame) cancelAnimationFrame(cropFrame);
+  });
 
   const baseScale = () => Math.min(740 / props.source.width, 380 / props.source.height) * zoom();
   const scale = baseScale;
-  const displayWidth = () => props.source.width * scale();
-  const displayHeight = () => props.source.height * scale();
-  const sourceMin = () => Math.min(32, canvasSize().width, canvasSize().height);
+  const sourceMin = () => Math.max(32, 32 * ratio());
   const maxCropWidth = (x: number, y: number) =>
     Math.floor(Math.min(canvasSize().width - x, (canvasSize().height - y) * ratio()));
+  const resizeWidth = (current: Crop, requested: number) => {
+    const maxWidth = maxCropWidth(current.x, current.y);
+    if (maxWidth < sourceMin()) return current;
+    const width = clamp(requested, sourceMin(), maxWidth);
+    return { ...current, width, height: Math.round(width / ratio()) };
+  };
 
   const setPosition = (axis: "x" | "y", value: number) =>
     setCrop((current) => {
@@ -116,16 +129,7 @@ export function ScanCropEditor(props: Props) {
     });
 
   const setDimension = (axis: "width" | "height", value: number) =>
-    setCrop((current) => {
-      const requestedWidth = axis === "width" ? value : value * ratio();
-      const width = clamp(requestedWidth, sourceMin(), maxCropWidth(current.x, current.y));
-      const height = Math.max(sourceMin(), Math.round(width / ratio()));
-      return {
-        ...current,
-        width: Math.min(width, Math.floor((canvasSize().height - current.y) * ratio())),
-        height: Math.min(height, canvasSize().height - current.y),
-      };
-    });
+    setCrop((current) => resizeWidth(current, axis === "width" ? value : value * ratio()));
 
   const setAngleValue = (value: number) => {
     const next = normalizedAngle(value);
@@ -134,11 +138,18 @@ export function ScanCropEditor(props: Props) {
   };
 
   const beginCropDrag = (event: PointerEvent, mode: "move" | "resize") => {
-    if (props.busy) return;
+    if (props.busy || !canvasElement) return;
     event.preventDefault();
     event.stopPropagation();
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-    setDrag({ mode, px: event.clientX, py: event.clientY, crop: { ...crop() } });
+    const rect = canvasElement.getBoundingClientRect();
+    setDrag({
+      mode,
+      px: event.clientX,
+      py: event.clientY,
+      scale: rect.width / canvasSize().width,
+      crop: { ...crop() },
+    });
   };
 
   const beginRotate = (event: PointerEvent) => {
@@ -154,8 +165,25 @@ export function ScanCropEditor(props: Props) {
     });
   };
 
-  const moveDrag = (event: PointerEvent) => {
-    const active = drag();
+  const commitCrop = (next: Crop) => {
+    pendingCrop = next;
+    if (!cropFrame) {
+      cropFrame = requestAnimationFrame(() => {
+        cropFrame = 0;
+        if (pendingCrop) setCrop(pendingCrop);
+        pendingCrop = null;
+      });
+    }
+  };
+
+  const flushCrop = () => {
+    if (cropFrame) cancelAnimationFrame(cropFrame);
+    cropFrame = 0;
+    if (pendingCrop) setCrop(pendingCrop);
+    pendingCrop = null;
+  };
+
+  const moveDrag = (event: PointerEvent, active = drag()) => {
     if (!active) return;
     if (active.mode === "rotate") {
       if (!canvasElement) return;
@@ -167,10 +195,10 @@ export function ScanCropEditor(props: Props) {
       setAngleInput(String(next));
       return;
     }
-    const dx = (event.clientX - active.px) / scale();
-    const dy = (event.clientY - active.py) / scale();
+    const dx = (event.clientX - active.px) / active.scale;
+    const dy = (event.clientY - active.py) / active.scale;
     if (active.mode === "move") {
-      setCrop({
+      commitCrop({
         ...active.crop,
         x: clamp(active.crop.x + dx, 0, canvasSize().width - active.crop.width),
         y: clamp(active.crop.y + dy, 0, canvasSize().height - active.crop.height),
@@ -178,12 +206,22 @@ export function ScanCropEditor(props: Props) {
       return;
     }
     const widthDelta = Math.abs(dx) > Math.abs(dy * ratio()) ? dx : dy * ratio();
-    const width = clamp(active.crop.width + widthDelta, sourceMin(), maxCropWidth(active.crop.x, active.crop.y));
-    const height = Math.min(Math.round(width / ratio()), canvasSize().height - active.crop.y);
-    setCrop({ ...active.crop, width: Math.round(height * ratio()), height });
+    commitCrop(resizeWidth(active.crop, active.crop.width + widthDelta));
   };
 
-  const endDrag = () => setDrag(null);
+  const endDrag = (event: PointerEvent) => {
+    const active = drag();
+    if (active?.mode === "rotate") moveDrag(event, active);
+    else if (active) {
+      moveDrag(event, active);
+      flushCrop();
+    }
+    setDrag(null);
+  };
+  const cancelDrag = () => {
+    flushCrop();
+    setDrag(null);
+  };
 
   const nudge = (event: KeyboardEvent) => {
     if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
@@ -229,7 +267,7 @@ export function ScanCropEditor(props: Props) {
           </div>
         </div>
         <div class="crop-viewport" tabindex="0" onKeyDown={nudge} aria-label="Scan crop preview. Use arrow keys to move one source pixel.">
-          <div ref={canvasElement} class="crop-canvas" style={{ width: `${displayWidth()}px`, height: `${displayHeight()}px` }}>
+          <div ref={canvasElement} class="crop-canvas" style={{ width: `${canvasSize().width * scale()}px`, height: `${canvasSize().height * scale()}px` }}>
             <div class="rotated-image" style={{
               width: `${props.source.width * scale()}px`,
               height: `${props.source.height * scale()}px`,
@@ -243,16 +281,15 @@ export function ScanCropEditor(props: Props) {
               onPointerDown={(event) => beginCropDrag(event, "move")}
               onPointerMove={moveDrag}
               onPointerUp={endDrag}
-              onPointerCancel={endDrag}
+              onPointerCancel={cancelDrag}
             >
-              {props.geometry && <SampleOverlay geometry={props.geometry} />}
+              {props.geometry && <SampleOverlay geometry={props.geometry} angle={angle()} />}
               <button type="button" class="crop-handle" aria-label="Resize crop" disabled={props.busy}
-                onPointerDown={(event) => beginCropDrag(event, "resize")} onPointerMove={moveDrag}
-                onPointerUp={endDrag} onPointerCancel={endDrag} />
+                onPointerDown={(event) => beginCropDrag(event, "resize")} />
             </div>
           </div>
           <button type="button" class="rotation-handle" aria-label="Rotate image" disabled={props.busy}
-            onPointerDown={beginRotate} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
+            onPointerDown={beginRotate} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={cancelDrag}>
             ↻
           </button>
         </div>
