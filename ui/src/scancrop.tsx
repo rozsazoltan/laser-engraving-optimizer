@@ -1,4 +1,4 @@
-import { For, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, batch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { ScanGeometry, ScanSource } from "./types";
 
 type Crop = { x: number; y: number; width: number; height: number };
@@ -48,21 +48,13 @@ function rotatedSize(width: number, height: number, angle: number) {
   if (sine < 1e-12) sine = 0;
   return {
     width: Math.max(1, Math.ceil(width * cosine + height * sine)),
-    height: Math.max(1, Math.ceil(width * sine + height * cosine)),
+    height: Math.max(1, Math.ceil(height * cosine + width * sine)),
   };
 }
 
-function initialCrop(source: { width: number; height: number }, ratio: number): Crop {
-  const width = Math.min(source.width, Math.round(source.height * ratio));
-  const height = Math.min(source.height, Math.round(source.width / ratio));
-  const fittedWidth = Math.min(width, Math.round(height * ratio));
-  const fittedHeight = Math.min(height, Math.round(fittedWidth / ratio));
-  return {
-    x: Math.floor((source.width - fittedWidth) / 2),
-    y: Math.floor((source.height - fittedHeight) / 2),
-    width: fittedWidth,
-    height: fittedHeight,
-  };
+function frameSize(size: { width: number; height: number }, ratio: number) {
+  const width = Math.max(1, Math.round(Math.min(size.width, size.height * ratio)));
+  return { width, height: clamp(width / ratio, 1, size.height) };
 }
 
 function normalizedAngle(value: number) {
@@ -76,26 +68,42 @@ function angleDelta(value: number) {
 export function ScanCropEditor(props: Props) {
   const ratio = () => props.targetWidth / props.targetHeight;
   const [angle, setAngle] = createSignal(0);
-  const [angleInput, setAngleInput] = createSignal("0");
-  const canvasSize = () => rotatedSize(props.source.width, props.source.height, angle());
-  const [crop, setCrop] = createSignal(initialCrop(canvasSize(), ratio()));
-  const [zoom, setZoom] = createSignal(1);
+  const canvasSize = createMemo(() => rotatedSize(props.source.width, props.source.height, angle()));
+  const frame = createMemo(() => frameSize(canvasSize(), ratio()));
+  const [pan, setPan] = createSignal({ x: 0, y: 0 });
   const [drag, setDrag] = createSignal<
-    | { mode: "move" | "resize"; px: number; py: number; scale: number; crop: Crop }
-    | { mode: "rotate"; pointerAngle: number; startAngle: number }
+    | { mode: "pan"; pointerId: number; px: number; py: number; scale: number; pan: { x: number; y: number } }
+    | { mode: "rotate"; pointerId: number; pointerAngle: number; startAngle: number }
     | null
   >(null);
   let canvasElement: HTMLDivElement | undefined;
-  let pendingCrop: Crop | null = null;
-  let cropFrame = 0;
+  let stageElement: HTMLDivElement | undefined;
+  let pendingPan: { x: number; y: number } | null = null;
+  let panFrame = 0;
+  const clearPendingPan = () => {
+    if (panFrame) cancelAnimationFrame(panFrame);
+    panFrame = 0;
+    pendingPan = null;
+  };
+  const [viewportHeight, setViewportHeight] = createSignal(0);
+
+  onMount(() => {
+    const update = () => setViewportHeight(stageElement?.getBoundingClientRect().height ?? 0);
+    update();
+    window.addEventListener("resize", update);
+    onCleanup(() => window.removeEventListener("resize", update));
+  });
 
   createEffect(() => {
     const source = props.source;
     props.sourceMode;
+    clearPendingPan();
     setAngle(0);
-    setAngleInput("0");
-    setCrop(initialCrop(source, ratio()));
-    setZoom(1);
+    const { width, height } = frameSize(source, ratio());
+    setPan({
+      x: Math.max(0, Math.round((source.width - width) / 2)),
+      y: Math.max(0, Math.round((source.height - height) / 2)),
+    });
     setDrag(null);
   });
 
@@ -104,148 +112,137 @@ export function ScanCropEditor(props: Props) {
   };
   onMount(() => window.addEventListener("keydown", closeOnEscape));
   onCleanup(() => window.removeEventListener("keydown", closeOnEscape));
-  onCleanup(() => {
-    if (cropFrame) cancelAnimationFrame(cropFrame);
-  });
+  onCleanup(clearPendingPan);
 
-  const baseScale = () => Math.min(740 / props.source.width, 380 / props.source.height) * zoom();
-  const scale = baseScale;
-  const sourceMin = () => Math.max(32, 32 * ratio());
-  const maxCropWidth = (x: number, y: number) =>
-    Math.floor(Math.min(canvasSize().width - x, (canvasSize().height - y) * ratio()));
-  const resizeWidth = (current: Crop, requested: number) => {
-    const maxWidth = maxCropWidth(current.x, current.y);
-    if (maxWidth < sourceMin()) return current;
-    const width = clamp(requested, sourceMin(), maxWidth);
-    return { ...current, width, height: Math.round(width / ratio()) };
+  const frameScreenWidth = () => {
+    const available = viewportHeight() ? viewportHeight() - 16 : 380;
+    return Math.max(120, Math.min(740, available * ratio(), 380 * ratio()));
   };
-
-  const setPosition = (axis: "x" | "y", value: number) =>
-    setCrop((current) => {
-      const next = { ...current, [axis]: Math.round(value) };
-      next.x = clamp(next.x, 0, canvasSize().width - next.width);
-      next.y = clamp(next.y, 0, canvasSize().height - next.height);
-      return next;
-    });
-
-  const setDimension = (axis: "width" | "height", value: number) =>
-    setCrop((current) => resizeWidth(current, axis === "width" ? value : value * ratio()));
+  const scale = () => frameScreenWidth() / frame().width;
+  const clampPan = (value: { x: number; y: number }) => {
+    const size = canvasSize();
+    const box = frame();
+    return {
+      x: clamp(value.x, 0, size.width - box.width),
+      y: clamp(value.y, 0, size.height - box.height),
+    };
+  };
+  const setPanClamped = (value: { x: number; y: number }) => setPan(clampPan(value));
+  const crop = (): Crop => ({ ...pan(), ...frame() });
 
   const setAngleValue = (value: number) => {
+    if (!Number.isFinite(value)) return;
+    flushPan();
+    const before = crop();
     const next = normalizedAngle(value);
-    setAngle(next);
-    setAngleInput(String(next));
+    batch(() => {
+      setAngle(next);
+      const box = frame();
+      setPanClamped({
+        x: before.x + (before.width - box.width) / 2,
+        y: before.y + (before.height - box.height) / 2,
+      });
+    });
   };
 
-  const beginCropDrag = (event: PointerEvent, mode: "move" | "resize") => {
-    if (props.busy || !canvasElement) return;
+  const beginPan = (event: PointerEvent) => {
+    if (props.busy || drag() || event.button !== 0 || !canvasElement || !stageElement) return;
+    const scale = canvasElement.getBoundingClientRect().width / canvasSize().width;
+    if (scale <= 0) return;
     event.preventDefault();
-    event.stopPropagation();
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-    const rect = canvasElement.getBoundingClientRect();
+    stageElement.focus({ preventScroll: true });
+    stageElement.setPointerCapture(event.pointerId);
     setDrag({
-      mode,
+      mode: "pan",
+      pointerId: event.pointerId,
       px: event.clientX,
       py: event.clientY,
-      scale: rect.width / canvasSize().width,
-      crop: { ...crop() },
+      scale,
+      pan: { ...pan() },
     });
   };
 
   const beginRotate = (event: PointerEvent) => {
-    if (props.busy || !canvasElement) return;
-    event.preventDefault();
     event.stopPropagation();
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-    const rect = canvasElement.getBoundingClientRect();
+    if (props.busy || drag() || event.button !== 0 || !stageElement) return;
+    event.preventDefault();
+    const handle = event.currentTarget as HTMLButtonElement;
+    handle.focus({ preventScroll: true });
+    handle.setPointerCapture(event.pointerId);
+    const rect = stageElement.getBoundingClientRect();
     setDrag({
       mode: "rotate",
+      pointerId: event.pointerId,
       pointerAngle: Math.atan2(event.clientY - (rect.top + rect.height / 2), event.clientX - (rect.left + rect.width / 2)) * 180 / Math.PI,
       startAngle: angle(),
     });
   };
 
-  const commitCrop = (next: Crop) => {
-    pendingCrop = next;
-    if (!cropFrame) {
-      cropFrame = requestAnimationFrame(() => {
-        cropFrame = 0;
-        if (pendingCrop) setCrop(pendingCrop);
-        pendingCrop = null;
-      });
-    }
+  const commitPan = (next: { x: number; y: number }) => {
+    pendingPan = next;
+    if (!panFrame) panFrame = requestAnimationFrame(flushPan);
   };
 
-  const flushCrop = () => {
-    if (cropFrame) cancelAnimationFrame(cropFrame);
-    cropFrame = 0;
-    if (pendingCrop) setCrop(pendingCrop);
-    pendingCrop = null;
+  const flushPan = () => {
+    if (pendingPan) setPanClamped(pendingPan);
+    clearPendingPan();
   };
 
   const moveDrag = (event: PointerEvent, active = drag()) => {
-    if (!active) return;
+    if (!active || active.pointerId !== event.pointerId) return;
     if (active.mode === "rotate") {
-      if (!canvasElement) return;
-      const rect = canvasElement.getBoundingClientRect();
+      if (!stageElement) return;
+      const rect = stageElement.getBoundingClientRect();
       const pointerAngle = Math.atan2(event.clientY - (rect.top + rect.height / 2), event.clientX - (rect.left + rect.width / 2)) * 180 / Math.PI;
       const raw = active.startAngle + angleDelta(pointerAngle - active.pointerAngle);
-      const next = normalizedAngle(event.shiftKey ? Math.round(raw / 15) * 15 : raw);
-      setAngle(next);
-      setAngleInput(String(next));
+      setAngleValue(event.shiftKey ? Math.round(raw / 15) * 15 : raw);
       return;
     }
     const dx = (event.clientX - active.px) / active.scale;
     const dy = (event.clientY - active.py) / active.scale;
-    if (active.mode === "move") {
-      commitCrop({
-        ...active.crop,
-        x: clamp(active.crop.x + dx, 0, canvasSize().width - active.crop.width),
-        y: clamp(active.crop.y + dy, 0, canvasSize().height - active.crop.height),
-      });
-      return;
-    }
-    const widthDelta = Math.abs(dx) > Math.abs(dy * ratio()) ? dx : dy * ratio();
-    commitCrop(resizeWidth(active.crop, active.crop.width + widthDelta));
+    commitPan({ x: active.pan.x - dx, y: active.pan.y - dy });
   };
 
   const endDrag = (event: PointerEvent) => {
     const active = drag();
-    if (active?.mode === "rotate") moveDrag(event, active);
-    else if (active) {
-      moveDrag(event, active);
-      flushCrop();
-    }
+    if (!active || active.pointerId !== event.pointerId) return;
+    moveDrag(event, active);
+    flushPan();
     setDrag(null);
   };
-  const cancelDrag = () => {
-    flushCrop();
+  const cancelDrag = (event: PointerEvent) => {
+    if (drag()?.pointerId !== event.pointerId) return;
+    flushPan();
     setDrag(null);
   };
 
   const nudge = (event: KeyboardEvent) => {
+    if (props.busy || drag() || event.target !== stageElement || document.activeElement !== stageElement) return;
     if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
-    if ((event.target as HTMLElement).closest("input")) return;
     event.preventDefault();
     const distance = event.shiftKey ? 10 : 1;
-    const { x, y } = crop();
-    if (event.key === "ArrowLeft") setPosition("x", x - distance);
-    if (event.key === "ArrowRight") setPosition("x", x + distance);
-    if (event.key === "ArrowUp") setPosition("y", y - distance);
-    if (event.key === "ArrowDown") setPosition("y", y + distance);
+    const { x, y } = pan();
+    if (event.key === "ArrowLeft") setPanClamped({ x: x + distance, y });
+    if (event.key === "ArrowRight") setPanClamped({ x: x - distance, y });
+    if (event.key === "ArrowUp") setPanClamped({ x, y: y + distance });
+    if (event.key === "ArrowDown") setPanClamped({ x, y: y - distance });
   };
 
-  const boxStyle = () => ({
-    left: `${crop().x * scale()}px`,
-    top: `${crop().y * scale()}px`,
-    width: `${crop().width * scale()}px`,
-    height: `${crop().height * scale()}px`,
+  const imageStyle = () => {
+    const size = canvasSize();
+    const box = crop();
+    const offsetX = (size.width / 2 - box.x - box.width / 2) * scale();
+    const offsetY = (size.height / 2 - box.y - box.height / 2) * scale();
+    return {
+      width: `${props.source.width * scale()}px`,
+      height: `${props.source.height * scale()}px`,
+      transform: `translate(calc(-50% + ${offsetX}px), calc(-50% + ${offsetY}px)) rotate(${angle()}deg)`,
+    };
+  };
+  const frameStyle = () => ({
+    width: `${frameScreenWidth()}px`,
+    height: `${frameScreenWidth() / ratio()}px`,
   });
-  const valid = () =>
-    crop().width >= 32 && crop().height >= 32 &&
-    crop().x >= 0 && crop().y >= 0 &&
-    crop().x + crop().width <= canvasSize().width &&
-    crop().y + crop().height <= canvasSize().height;
 
   return (
     <div class="scan-editor-scrim">
@@ -259,66 +256,53 @@ export function ScanCropEditor(props: Props) {
           <button type="button" class="btn" disabled={props.busy} onClick={props.onCancel}>Cancel</button>
         </header>
         <div class="crop-toolbar">
-          <span class="section-label">Position crop · arrow keys move by 1 px, Shift + arrow by 10 px</span>
-          <div class="row-actions">
-            <button type="button" class="btn small" disabled={props.busy} onClick={() => setZoom((value) => Math.max(0.5, Math.round((value - 0.25) * 100) / 100))}>−</button>
-            <span class="mono crop-zoom">{Math.round(zoom() * 100)}%</span>
-            <button type="button" class="btn small" disabled={props.busy} onClick={() => setZoom((value) => Math.min(3, Math.round((value + 0.25) * 100) / 100))}>+</button>
-          </div>
+          <span class="section-label">Drag image to position · arrow keys move by 1 px, Shift + arrow by 10 px</span>
         </div>
-        <div class="crop-viewport" tabindex="0" onKeyDown={nudge} aria-label="Scan crop preview. Use arrow keys to move one source pixel.">
-          <div ref={canvasElement} class="crop-canvas" style={{ width: `${canvasSize().width * scale()}px`, height: `${canvasSize().height * scale()}px` }}>
-            <div class="rotated-image" style={{
-              width: `${props.source.width * scale()}px`,
-              height: `${props.source.height * scale()}px`,
-              transform: `translate(-50%, -50%) rotate(${angle()}deg)`,
-            }}>
+        <div ref={stageElement} class="crop-viewport crop-stage" role="group" tabindex="0" onKeyDown={nudge}
+          onPointerDown={beginPan} onPointerMove={moveDrag} onPointerUp={endDrag}
+          onPointerCancel={cancelDrag} onLostPointerCapture={cancelDrag}
+          aria-label="Scan crop preview. Drag image to position it. Use arrow keys to nudge.">
+          <div
+            ref={canvasElement}
+            class="crop-canvas"
+            style={{ width: `${canvasSize().width * scale()}px`, height: `${canvasSize().height * scale()}px` }}
+          >
+            <div class="rotated-image" style={imageStyle()}>
               <img src={props.source.data_url} alt="Selected calibration scan" draggable={false} />
             </div>
-            <div
-              class="crop-window"
-              style={boxStyle()}
-              onPointerDown={(event) => beginCropDrag(event, "move")}
-              onPointerMove={moveDrag}
-              onPointerUp={endDrag}
-              onPointerCancel={cancelDrag}
-            >
-              {props.geometry && <SampleOverlay geometry={props.geometry} angle={angle()} />}
-              <button type="button" class="crop-handle" aria-label="Resize crop" disabled={props.busy}
-                onPointerDown={(event) => beginCropDrag(event, "resize")} />
-            </div>
+          </div>
+          <div class="crop-window" style={frameStyle()}>
+            {props.geometry && <SampleOverlay geometry={props.geometry} />}
           </div>
           <button type="button" class="rotation-handle" aria-label="Rotate image" disabled={props.busy}
-            onPointerDown={beginRotate} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={cancelDrag}>
+            onPointerDown={beginRotate}>
             ↻
           </button>
         </div>
         <div class="crop-fields-head">
-          <span class="section-label">Rotated canvas {canvasSize().width} × {canvasSize().height} px</span>
+          <span class="section-label">Rotated canvas {canvasSize().width} × {canvasSize().height} px · frame {crop().width} × {crop().height} px</span>
         </div>
-        <div class="crop-fields">
-          <label><span class="field-label">X (px)</span><input class="input mono" type="number" min="0" max={canvasSize().width} step="1" disabled={props.busy} value={crop().x} onInput={(event) => setPosition("x", Number(event.currentTarget.value))} /></label>
-          <label><span class="field-label">Y (px)</span><input class="input mono" type="number" min="0" max={canvasSize().height} step="1" disabled={props.busy} value={crop().y} onInput={(event) => setPosition("y", Number(event.currentTarget.value))} /></label>
-          <label><span class="field-label">W (px)</span><input class="input mono" type="number" min="32" max={canvasSize().width} step="1" disabled={props.busy} value={crop().width} onInput={(event) => setDimension("width", Number(event.currentTarget.value))} /></label>
-          <label><span class="field-label">H (px)</span><input class="input mono" type="number" min="32" max={canvasSize().height} step="1" disabled={props.busy} value={crop().height} onInput={(event) => setDimension("height", Number(event.currentTarget.value))} /></label>
-          <label><span class="field-label">Rotation (deg)</span><input class="input mono" type="number" min="-180" max="180" step="0.1" disabled={props.busy} value={angleInput()} onInput={(event) => {
-            const text = event.currentTarget.value;
-            setAngleInput(text);
-            if (text.trim() === "") return;
-            const value = Number(text);
-            if (Number.isFinite(value)) setAngleValue(value);
-          }} onBlur={() => {
-            const value = Number(angleInput());
-            if (angleInput().trim() === "" || !Number.isFinite(value)) setAngleInput(String(angle()));
-            else setAngleValue(value);
+        <div class="crop-fields crop-readouts">
+          <label><span class="field-label">X (px)</span><span class="mono">{crop().x}</span></label>
+          <label><span class="field-label">Y (px)</span><span class="mono">{crop().y}</span></label>
+          <label><span class="field-label">W (px)</span><span class="mono">{crop().width}</span></label>
+          <label><span class="field-label">H (px)</span><span class="mono">{crop().height}</span></label>
+          <label><span class="field-label">Rotation (deg)</span><input class="input mono" type="number" min="-180" max="180" step="0.1" disabled={props.busy} value={String(angle())} onInput={(event) => {
+            const value = event.currentTarget.valueAsNumber;
+            setAngleValue(value);
+            if (value < -180 || value > 180) event.currentTarget.value = String(angle());
+          }} onBlur={(event) => {
+            event.currentTarget.value = String(angle());
           }} /></label>
         </div>
-        {!valid() && <p class="hint warn">Crop is outside the rotated canvas; adjust X/Y/W/H or the angle.</p>}
         <p class="hint mono crop-size">{crop().width} × {crop().height} → {props.targetWidth} × {props.targetHeight} px</p>
         {!props.canImport && <p class="hint warn">This saved scan can be previewed, but saving its crop needs host support.</p>}
         <div class="row-actions">
-          <button type="button" class="btn primary" disabled={props.busy || !valid() || !props.canImport}
-            onClick={() => props.onImport(crop(), angle())}>{props.busy ? (props.editingSaved ? "Saving…" : "Importing…") : (props.editingSaved ? "Save" : "Import")}</button>
+          <button type="button" class="btn primary" disabled={props.busy || !props.canImport}
+            onClick={() => {
+              flushPan();
+              props.onImport(crop(), angle());
+            }}>{props.busy ? (props.editingSaved ? "Saving…" : "Importing…") : (props.editingSaved ? "Save" : "Import")}</button>
           <button type="button" class="btn" disabled={props.busy} onClick={props.onCancel}>Cancel</button>
         </div>
       </section>
