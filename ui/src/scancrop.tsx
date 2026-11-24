@@ -80,6 +80,8 @@ export function ScanCropEditor(props: Props) {
   const [drag, setDrag] = createSignal<
     | { mode: "pan"; pointerId: number; px: number; py: number; scale: number; pan: { x: number; y: number } }
     | { mode: "rotate"; pointerId: number; pointerAngle: number; startAngle: number }
+    | { mode: "scale"; pointerId: number; startX: number; startZoom: number }
+    | { mode: "grip"; pointerId: number; startDist: number; startZoom: number }
     | null
   >(null);
   let canvasElement: HTMLDivElement | undefined;
@@ -167,6 +169,32 @@ export function ScanCropEditor(props: Props) {
     });
   };
 
+  const beginScale = (event: PointerEvent) => {
+    event.stopPropagation();
+    if (props.busy || drag() || event.button !== 0) return;
+    event.preventDefault();
+    const handle = event.currentTarget as HTMLButtonElement;
+    handle.focus({ preventScroll: true });
+    handle.setPointerCapture(event.pointerId);
+    setDrag({ mode: "scale", pointerId: event.pointerId, startX: event.clientX, startZoom: zoom() });
+  };
+
+  const beginGrip = (event: PointerEvent) => {
+    event.stopPropagation();
+    if (props.busy || drag() || event.button !== 0 || !stageElement) return;
+    event.preventDefault();
+    const handle = event.currentTarget as HTMLButtonElement;
+    handle.focus({ preventScroll: true });
+    handle.setPointerCapture(event.pointerId);
+    const rect = stageElement.getBoundingClientRect();
+    setDrag({
+      mode: "grip",
+      pointerId: event.pointerId,
+      startDist: Math.max(1, Math.hypot(event.clientX - (rect.left + rect.width / 2), event.clientY - (rect.top + rect.height / 2))),
+      startZoom: zoom(),
+    });
+  };
+
   const beginPan = (event: PointerEvent) => {
     if (props.busy || drag() || event.button !== 0 || !canvasElement || !stageElement) return;
     const scale = canvasElement.getBoundingClientRect().width / canvasSize().width;
@@ -218,6 +246,18 @@ export function ScanCropEditor(props: Props) {
       const pointerAngle = Math.atan2(event.clientY - (rect.top + rect.height / 2), event.clientX - (rect.left + rect.width / 2)) * 180 / Math.PI;
       const raw = active.startAngle + angleDelta(pointerAngle - active.pointerAngle);
       setAngleValue(event.shiftKey ? Math.round(raw / 15) * 15 : raw);
+      return;
+    }
+    if (active.mode === "scale") {
+      const dx = event.clientX - active.startX;
+      setZoomValue(active.startZoom * Math.pow(2, dx / 240));
+      return;
+    }
+    if (active.mode === "grip") {
+      if (!stageElement) return;
+      const rect = stageElement.getBoundingClientRect();
+      const distance = Math.hypot(event.clientX - (rect.left + rect.width / 2), event.clientY - (rect.top + rect.height / 2));
+      setZoomValue(active.startZoom * (distance / active.startDist));
       return;
     }
     const dx = (event.clientX - active.px) / active.scale;
@@ -296,6 +336,12 @@ export function ScanCropEditor(props: Props) {
           <div class="crop-window" style={frameStyle()}>
             {props.geometry && <SampleOverlay geometry={props.geometry} />}
           </div>
+          <div class="frame-handles" style={frameStyle()}>
+            <button type="button" class="frame-grip frame-grip-nw" aria-label="Resize frame from the top left corner" disabled={props.busy} onPointerDown={beginGrip} />
+            <button type="button" class="frame-grip frame-grip-ne" aria-label="Resize frame from the top right corner" disabled={props.busy} onPointerDown={beginGrip} />
+            <button type="button" class="frame-grip frame-grip-sw" aria-label="Resize frame from the bottom left corner" disabled={props.busy} onPointerDown={beginGrip} />
+            <button type="button" class="frame-grip frame-grip-se" aria-label="Resize frame from the bottom right corner" disabled={props.busy} onPointerDown={beginGrip} />
+          </div>
           <button type="button" class="rotation-handle" aria-label="Rotate image" disabled={props.busy}
             onPointerDown={beginRotate}>
             ↻
@@ -305,6 +351,13 @@ export function ScanCropEditor(props: Props) {
               onClick={() => setZoomValue(zoom() * 1.1)}>+</button>
             <button type="button" aria-label="Zoom out" disabled={props.busy || zoom() <= 1}
               onClick={() => setZoomValue(zoom() / 1.1)}>−</button>
+            <button type="button" class="zoom-scale" aria-label="Resize image by dragging" title="Drag sideways to resize the image"
+              disabled={props.busy} onPointerDown={beginScale}>
+              <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+                <rect x="1.5" y="5" width="13" height="6" rx="1" fill="none" stroke="currentColor" />
+                <path d="M4 5v3M6.5 5v2M9 5v3M11.5 5v2" stroke="currentColor" fill="none" />
+              </svg>
+            </button>
           </div>
         </div>
         <div class="crop-fields-head">

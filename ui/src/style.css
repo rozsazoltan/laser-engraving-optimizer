@@ -1652,6 +1652,42 @@ select.input {
 .crop-window > .sample-overlay {
   overflow: hidden;
 }
+
+.frame-handles {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 4;
+  pointer-events: none;
+}
+.frame-grip {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: auto;
+}
+.frame-grip::before {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border: 2px solid #4da3ff;
+  opacity: 0.7;
+}
+.frame-grip-nw { top: -11px; left: -11px; cursor: nwse-resize; }
+.frame-grip-nw::before { border-right: 0; border-bottom: 0; border-top-left-radius: 3px; }
+.frame-grip-ne { top: -11px; right: -11px; cursor: nesw-resize; }
+.frame-grip-ne::before { border-left: 0; border-bottom: 0; border-top-right-radius: 3px; }
+.frame-grip-sw { bottom: -11px; left: -11px; cursor: nesw-resize; }
+.frame-grip-sw::before { border-right: 0; border-top: 0; border-bottom-left-radius: 3px; }
+.frame-grip-se { bottom: -11px; right: -11px; cursor: nwse-resize; }
+.frame-grip-se::before { border-left: 0; border-top: 0; border-bottom-right-radius: 3px; }
+.frame-grip:hover::before {
+  opacity: 1;
+}
 .rotation-handle {
   position: absolute;
   top: 8px;
@@ -1691,6 +1727,8 @@ select.input {
   color: var(--text);
   font-size: 16px;
   line-height: 1;
+  display: grid;
+  place-items: center;
   cursor: pointer;
 }
 .zoom-controls > button:hover:not(:disabled) {
