@@ -8,6 +8,24 @@ type Props = {
   onRetry: () => void;
 };
 
+type ProgressProps = { label?: string; percentage: number; detail?: string };
+
+export function ProgressScreen(props: ProgressProps) {
+  return (
+    <div class="splash-inner" role="status" aria-live="polite">
+      <div class="splash-mark">
+        <span class="tab-mark" aria-hidden="true" />
+        <span class="splash-word">engraving</span>
+      </div>
+      <span class="splash-msg">{props.label ? `${props.label} · ` : ""}{Math.round(props.percentage)}%</span>
+      {props.detail && <span class="splash-msg">{props.detail}</span>}
+      <div class="splash-bar" role="progressbar" aria-label={props.label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(props.percentage)}>
+        <span class="splash-fill" style={{ width: `${props.percentage}%` }} />
+      </div>
+    </div>
+  );
+}
+
 /** How fast the determinate bar creeps towards 95% while the first state loads. */
 const STEP = 3;
 const STEP_MS = 40;
@@ -29,35 +47,21 @@ export function Splash(props: Props) {
 
   return (
     <div class={`splash ${props.phase === "leaving" ? "leaving" : ""}`} role="status" aria-live="polite">
-      <div class="splash-inner">
-        <div class="splash-mark">
-          <span class="tab-mark" aria-hidden="true" />
-          <span class="splash-word">engraving</span>
-        </div>
-
-        <Show
-          when={props.phase === "error"}
-          fallback={
-            <>
-              <span class="splash-msg">{progress()}%</span>
-              <div
-                class="splash-bar"
-                role="progressbar"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={progress()}
-              >
-                <span class="splash-fill" style={{ width: `${progress()}%` }} />
-              </div>
-            </>
-          }
-        >
-          <p class="splash-error">{props.error}</p>
-          <button type="button" class="btn" onClick={props.onRetry}>
-            Retry
-          </button>
-        </Show>
-      </div>
+      <Show
+        when={props.phase !== "error"}
+        fallback={
+          <div class="splash-inner">
+            <div class="splash-mark">
+              <span class="tab-mark" aria-hidden="true" />
+              <span class="splash-word">engraving</span>
+            </div>
+            <p class="splash-error">{props.error}</p>
+            <button type="button" class="btn" onClick={props.onRetry}>Retry</button>
+          </div>
+        }
+      >
+        <ProgressScreen percentage={progress()} />
+      </Show>
     </div>
   );
 }

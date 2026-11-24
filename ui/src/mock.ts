@@ -152,6 +152,18 @@ const previewImage = (label: string, width: number, height: number) => {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 };
 
+const scanSource = (label: string, width: number, height: number): ScanSource => ({
+  width,
+  height,
+  data_url: previewImage(label, width, height),
+});
+const managedScans = new Map<string, ScanSource>();
+const originalScans = new Map<string, ScanSource>();
+for (const item of presets.filter((entry) => entry.has_scan)) {
+  managedScans.set(item.id, scanSource("Current scan", 2400, 2400));
+  originalScans.set(item.id, scanSource("Original scan", 3200, 2400));
+}
+
 const scanGeometry = (match: Preset): ScanGeometry => {
   const block = match.calibration.block_size;
   const width = block * match.calibration.columns;
@@ -192,6 +204,22 @@ const firstPresetOf = (laserId: string | null) =>
 
 export async function mockCall<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   await wait(command === "get_state" ? 160 : 110);
+  const operationDelay: Record<string, number> = {
+    process_photo: 750,
+    scan_source: 450,
+    scan_source_preset: 450,
+    import_scan_crop: 550,
+    import_scan_crop_preset: 550,
+    export_gauge: 500,
+    save_engraving: 450,
+    save_simulation: 450,
+    save_report: 450,
+    open_scan_archive: 400,
+    clear_scan_archive: 400,
+    pick_open_file: 400,
+    pick_save_file: 350,
+  };
+  if (operationDelay[command]) await wait(operationDelay[command]);
 
   switch (command) {
     case "get_state":
@@ -335,7 +363,14 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
     case "scan_source_preset": {
       const match = presetOf(String(args?.id ?? ""));
       if (!match.has_scan) throw "This preset has no calibration scan.";
-      return { width: 1600, height: 1200, data_url: previewImage("Saved scan", 1600, 1200) } as T;
+      return (managedScans.get(match.id) ?? scanSource("Current scan", 2400, 2400)) as T;
+    }
+
+    case "scan_source_original": {
+      const match = presetOf(String(args?.id ?? ""));
+      if (!match.has_scan) throw "This preset has no calibration scan.";
+      const current = managedScans.get(match.id) ?? scanSource("Current scan", 2400, 2400);
+      return (originalScans.get(match.id) ?? current) as T;
     }
 
     case "import_scan_crop": {
@@ -353,6 +388,8 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
         throw "The crop is outside the source image or smaller than 32 × 32 px.";
       }
       presets = presets.map((item) => item.id === id ? { ...item, has_scan: true } : item);
+      managedScans.set(id, scanSource("Current scan", match.calibration.block_size * match.calibration.columns, match.calibration.block_size * match.calibration.rows));
+      if (!originalScans.has(id)) originalScans.set(id, scanSource("Original scan", sourceWidth, sourceHeight));
       cache.clear();
       status = `Calibration scan imported for “${match.name}”`;
       error = null;
@@ -363,14 +400,33 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
       const id = String(args?.id ?? "");
       const match = presetOf(id);
       if (!match.has_scan) throw "This preset has no calibration scan.";
-      return mockCall<T>("import_scan_crop", {
-        id,
-        path: "C:\\mock\\scans\\gauge.png",
-        x: Number(args?.x),
-        y: Number(args?.y),
-        width: Number(args?.width),
-        height: Number(args?.height),
-      });
+      const source = managedScans.get(id) ?? scanSource("Current scan", 2400, 2400);
+      const x = Number(args?.x), y = Number(args?.y), width = Number(args?.width), height = Number(args?.height);
+      if (![x, y, width, height].every(Number.isInteger) || x < 0 || y < 0 || width < 32 || height < 32 || x + width > source.width || y + height > source.height) {
+        throw "The crop is outside the source image or smaller than 32 × 32 px.";
+      }
+      managedScans.set(id, scanSource("Current scan", match.calibration.block_size * match.calibration.columns, match.calibration.block_size * match.calibration.rows));
+      cache.clear();
+      status = `Calibration scan imported for “${match.name}”`;
+      error = null;
+      return snapshot() as T;
+    }
+
+    case "import_scan_crop_source": {
+      const id = String(args?.id ?? "");
+      const match = presetOf(id);
+      if (!match.has_scan) throw "This preset has no calibration scan.";
+      const source = originalScans.get(id) ?? managedScans.get(id);
+      if (!source) throw "This preset has no calibration scan.";
+      const x = Number(args?.x), y = Number(args?.y), width = Number(args?.width), height = Number(args?.height);
+      if (![x, y, width, height].every(Number.isInteger) || x < 0 || y < 0 || width < 32 || height < 32 || x + width > source.width || y + height > source.height) {
+        throw "The crop is outside the source image or smaller than 32 × 32 px.";
+      }
+      managedScans.set(id, scanSource("Current scan", match.calibration.block_size * match.calibration.columns, match.calibration.block_size * match.calibration.rows));
+      cache.clear();
+      status = `Calibration scan imported for “${match.name}”`;
+      error = null;
+      return snapshot() as T;
     }
 
     case "remove_scan": {

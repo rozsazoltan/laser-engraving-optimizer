@@ -364,6 +364,26 @@ pub async fn scan_source_preset(host: State<'_, Host>, id: String) -> Result<Sca
     scan_source_path(&path)
 }
 
+#[tauri::command]
+pub async fn scan_source_original(host: State<'_, Host>, id: String) -> Result<ScanSource, String> {
+    let inner = host.lock();
+    let path = original_scan_path(&inner.store, &id)?;
+    drop(inner);
+    scan_source_path(&path)
+}
+
+fn original_scan_path(store: &PresetStore, id: &str) -> Result<PathBuf, String> {
+    let preset = store
+        .presets()
+        .iter()
+        .find(|preset| preset.id == id)
+        .ok_or_else(|| "Preset not found.".to_string())?;
+    store
+        .source_path(preset)
+        .or_else(|| store.scan_path(preset))
+        .ok_or_else(|| "This preset has no calibration scan.".to_string())
+}
+
 fn data_url(image: &GrayImage) -> Result<String, String> {
     let mut buffer = Vec::new();
     image::DynamicImage::ImageLuma8(image.clone())
@@ -681,6 +701,7 @@ pub fn save_preset(host: State<'_, Host>, preset: UiPreset) -> Result<UiState, S
         power_percent: preset.power_percent,
         dpi: preset.dpi,
         calibration_photo: existing.calibration_photo.clone(),
+        scan_source_photo: existing.scan_source_photo.clone(),
     };
     if let Err(error) = inner.store.update(updated) {
         return Err(host.fail(&mut inner, error.to_string()));
@@ -717,6 +738,7 @@ pub async fn import_scan(
     if let Err(error) = inner.store.import_calibration_photo(&id, Path::new(&path)) {
         return Err(host.fail(&mut inner, error.to_string()));
     }
+    let _ = inner.store.keep_scan_source(&id, Path::new(&path));
     inner.cache.clear();
     inner.previews.clear();
     inner.status = "Calibration scan imported".to_string();
@@ -740,6 +762,7 @@ pub async fn import_scan_crop(
     if let Err(error) = result {
         return Err(host.fail(&mut inner, error));
     }
+    let _ = inner.store.keep_scan_source(&id, Path::new(&path));
     inner.cache.clear();
     inner.previews.clear();
     inner.status = "Calibration scan imported".to_string();
@@ -778,6 +801,82 @@ pub async fn import_scan_crop_preset(
         };
         let archive_dir = inner.store.archive_dir();
         let store_root = match archive_dir.parent() {
+            Some(path) => path.to_path_buf(),
+            None => {
+                return Err(host.fail(
+                    &mut inner,
+                    "Could not locate preset store directory.".to_string(),
+                ));
+            }
+        };
+        (source_path, store_root, target_width, target_height)
+    };
+    let staging = match stage_preset_crop(
+        &source_path,
+        &store_root,
+        target_width,
+        target_height,
+        x,
+        y,
+        width,
+        height,
+    ) {
+        Ok(path) => path,
+        Err(error) => {
+            let mut inner = host.lock();
+            return Err(host.fail(&mut inner, error));
+        }
+    };
+    let mut inner = host.lock();
+    let imported = inner
+        .store
+        .import_calibration_photo(&id, &staging)
+        .map_err(|error| error.to_string());
+    let _ = std::fs::remove_file(staging);
+    if let Err(error) = imported {
+        return Err(host.fail(&mut inner, error));
+    }
+    inner.cache.clear();
+    inner.previews.clear();
+    inner.status = "Calibration scan updated".to_string();
+    Ok(host.publish(&mut inner))
+}
+
+#[tauri::command]
+pub async fn import_scan_crop_source(
+    host: State<'_, Host>,
+    id: String,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+) -> Result<UiState, String> {
+    let (source_path, store_root, target_width, target_height) = {
+        let mut inner = host.lock();
+        guard_busy(&inner)?;
+        inner.error = None;
+        let preset = match inner.store.presets().iter().find(|preset| preset.id == id) {
+            Some(preset) => preset,
+            None => return Err(host.fail(&mut inner, "Preset not found.".to_string())),
+        };
+        let source_path = match inner
+            .store
+            .source_path(preset)
+            .or_else(|| inner.store.scan_path(preset))
+        {
+            Some(path) => path,
+            None => {
+                return Err(host.fail(
+                    &mut inner,
+                    "This preset has no calibration scan.".to_string(),
+                ));
+            }
+        };
+        let (target_width, target_height) = match preset.calibration.dimensions() {
+            Ok(dimensions) => dimensions,
+            Err(error) => return Err(host.fail(&mut inner, error)),
+        };
+        let store_root = match inner.store.archive_dir().parent() {
             Some(path) => path.to_path_buf(),
             None => {
                 return Err(host.fail(
@@ -1250,6 +1349,85 @@ mod tests {
     }
 
     #[test]
+    fn original_scan_survives_crop_edits_and_legacy_scan_falls_back() {
+        let root = temp_root();
+        let mut store = PresetStore::open(&root).unwrap();
+        let laser_id = store.add_laser("Laser", 40.0).unwrap().id.clone();
+        let mut preset = Preset::new("Original", &laser_id);
+        preset.calibration.block_size = 32;
+        preset.calibration.rows = 2;
+        preset.calibration.columns = 2;
+        let id = preset.id.clone();
+        store.add(preset).unwrap();
+
+        let picked = RgbImage::from_fn(200, 160, |x, y| {
+            image::Rgb([x as u8, y as u8, (x + y) as u8])
+        });
+        let picked_path = root.join("picked.png");
+        picked.save(&picked_path).unwrap();
+        let picked_bytes = std::fs::read(&picked_path).unwrap();
+        import_crop_to_store(&mut store, &id, &picked_path, 40, 30, 64, 64).unwrap();
+        store.keep_scan_source(&id, &picked_path).unwrap();
+        let preset = store
+            .presets()
+            .iter()
+            .find(|preset| preset.id == id)
+            .unwrap();
+        let source_path = store.source_path(preset).unwrap();
+        assert_eq!(std::fs::read(&source_path).unwrap(), picked_bytes);
+        assert_ne!(
+            processing::load_rgb(&source_path).unwrap().dimensions(),
+            (64, 64)
+        );
+        let original = scan_source_path(&original_scan_path(&store, &id).unwrap()).unwrap();
+        assert_eq!((original.width, original.height), (200, 160));
+
+        let (target_width, target_height) = store.presets()[0].calibration.dimensions().unwrap();
+        let managed = store.scan_path(&store.presets()[0]).unwrap();
+        let archive_dir = store.archive_dir();
+        let store_root = archive_dir.parent().unwrap().to_path_buf();
+        let staging = stage_preset_crop(
+            &managed,
+            &store_root,
+            target_width,
+            target_height,
+            0,
+            0,
+            64,
+            64,
+        )
+        .unwrap();
+        store.import_calibration_photo(&id, &staging).unwrap();
+        std::fs::remove_file(staging).unwrap();
+        let preset = store
+            .presets()
+            .iter()
+            .find(|preset| preset.id == id)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(store.source_path(preset).unwrap()).unwrap(),
+            picked_bytes
+        );
+
+        let mut legacy = Preset::new("Legacy scan", &laser_id);
+        legacy.calibration.block_size = 32;
+        legacy.calibration.rows = 2;
+        legacy.calibration.columns = 2;
+        let legacy_id = legacy.id.clone();
+        store.add(legacy).unwrap();
+        let gauge_scan = root.join("gauge.png");
+        RgbImage::from_pixel(64, 64, image::Rgb([80, 80, 80]))
+            .save(&gauge_scan)
+            .unwrap();
+        store
+            .import_calibration_photo(&legacy_id, gauge_scan)
+            .unwrap();
+        let fallback = scan_source_path(&original_scan_path(&store, &legacy_id).unwrap()).unwrap();
+        assert_eq!((fallback.width, fallback.height), (64, 64));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn crop_import_resizes_and_rejections_preserve_current_scan() {
         let root = temp_root();
         let mut store = PresetStore::open(&root).unwrap();
@@ -1386,6 +1564,77 @@ mod tests {
         .unwrap_err();
         assert_eq!(error, "Crop is outside the image.");
         assert_eq!(std::fs::read(&new_managed).unwrap(), current_bytes);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_crop_preserves_original_and_rejects_out_of_bounds() {
+        let root = temp_root();
+        let mut store = PresetStore::open(&root).unwrap();
+        let laser_id = store.add_laser("Laser", 40.0).unwrap().id.clone();
+        let mut preset = Preset::new("Source crop", &laser_id);
+        preset.calibration.block_size = 32;
+        preset.calibration.rows = 2;
+        preset.calibration.columns = 2;
+        let id = preset.id.clone();
+        store.add(preset).unwrap();
+
+        let gauge_scan = root.join("gauge.png");
+        RgbImage::from_pixel(64, 64, image::Rgb([90, 90, 90]))
+            .save(&gauge_scan)
+            .unwrap();
+        store.import_calibration_photo(&id, &gauge_scan).unwrap();
+        let original_file = root.join("original.png");
+        RgbImage::from_fn(160, 120, |x, y| {
+            image::Rgb([x as u8, y as u8, (x.wrapping_add(y)) as u8])
+        })
+        .save(&original_file)
+        .unwrap();
+        store.keep_scan_source(&id, &original_file).unwrap();
+
+        let original_path = store.source_path(&store.presets()[0]).unwrap();
+        let original_bytes = std::fs::read(&original_path).unwrap();
+        let (target_width, target_height) = store.presets()[0].calibration.dimensions().unwrap();
+        let store_root = store.archive_dir().parent().unwrap().to_path_buf();
+        let staging = stage_preset_crop(
+            &original_path,
+            &store_root,
+            target_width,
+            target_height,
+            0,
+            0,
+            160,
+            120,
+        )
+        .unwrap();
+        store.import_calibration_photo(&id, &staging).unwrap();
+        std::fs::remove_file(staging).unwrap();
+        assert_eq!(
+            processing::load_rgb(&store.scan_path(&store.presets()[0]).unwrap())
+                .unwrap()
+                .dimensions(),
+            (target_width, target_height)
+        );
+        assert_eq!(std::fs::read(&original_path).unwrap(), original_bytes);
+
+        let managed_bytes = std::fs::read(&store.scan_path(&store.presets()[0]).unwrap()).unwrap();
+        let error = stage_preset_crop(
+            &original_path,
+            &store_root,
+            target_width,
+            target_height,
+            140,
+            100,
+            32,
+            32,
+        )
+        .unwrap_err();
+        assert_eq!(error, "Crop is outside the image.");
+        assert_eq!(
+            std::fs::read(store.scan_path(&store.presets()[0]).unwrap()).unwrap(),
+            managed_bytes
+        );
+        assert_eq!(std::fs::read(&original_path).unwrap(), original_bytes);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

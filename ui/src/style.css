@@ -354,6 +354,7 @@ body {
 /* ---------- content surface ---------- */
 
 .surface {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -363,6 +364,15 @@ body {
   border: 1px solid var(--line);
   border-radius: 12px;
   overflow: hidden;
+}
+
+.operation-progress {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
 }
 
 .app.with-tabs .surface {
@@ -1533,6 +1543,39 @@ select.input {
   font-size: 16px;
   font-weight: 500;
   color: var(--text);
+}
+
+.source-switch {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 6px;
+  background: #202020;
+}
+
+.source-switch button {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.source-switch button.active {
+  background: #34312a;
+  color: var(--text);
+}
+
+.source-switch button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.crop-fields-head {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: -7px;
 }
 
 .crop-viewport {

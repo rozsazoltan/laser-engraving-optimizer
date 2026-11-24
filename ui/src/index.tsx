@@ -5,7 +5,7 @@ import { DocStrip, EngraveArea } from "./engrave";
 import { LasersArea } from "./lasers";
 import { PresetsArea } from "./presets";
 import type { Crop } from "./scancrop";
-import { Splash, type SplashPhase } from "./splash";
+import { ProgressScreen, Splash, type SplashPhase } from "./splash";
 import {
   draftOf,
   laserLabel,
@@ -43,6 +43,15 @@ const WORKING_LABEL: Record<string, string> = {
   "save-engraving": "Saving engraving",
   "save-simulation": "Saving simulation",
   "save-report": "Saving report",
+};
+
+const estimateMs = (kind: string, megapixels?: number) => {
+  if (kind === "process") return Math.min(8000, 1500 + Math.max(0, (megapixels ?? 2) - 2) * 1000);
+  if (kind === "scan-source" || kind === "crop-import") return 1500;
+  if (kind === "gauge") return 800;
+  if (kind.startsWith("save-")) return 600;
+  if (kind === "archive-open" || kind === "archive-clear") return 400;
+  return null;
 };
 
 const slug = (value: string) =>
@@ -116,6 +125,7 @@ export default function App() {
   const [tabs, setTabs] = createSignal<DocTab[]>([]);
   const [activeTabId, setActiveTabId] = createSignal<string | null>(null);
   const [working, setWorking] = createSignal<string | null>(null);
+  const [operationProgress, setOperationProgress] = createSignal<{ label: string; percentage: number } | null>(null);
   const [failure, setFailure] = createSignal<string | null>(null);
   const [notice, setNotice] = createSignal<string | null>(null);
   const [pending, setPending] = createSignal<Pending | null>(null);
@@ -124,7 +134,7 @@ export default function App() {
   const [previewCache, setPreviewCache] = createSignal<Record<string, PresetPreview>>({});
   const [previewLoading, setPreviewLoading] = createSignal(false);
   const [geometryCache, setGeometryCache] = createSignal<Record<string, ScanGeometry>>({});
-  const [cropSession, setCropSession] = createSignal<{ id: string; path: string | null; source: ScanSource } | null>(null);
+  const [cropSession, setCropSession] = createSignal<{ id: string; path: string | null; source: ScanSource; sourceMode: "original" | "current" | null } | null>(null);
 
   let unlisten: (() => void) | null = null;
 
@@ -223,7 +233,7 @@ export default function App() {
     const preset = tabPreset();
     if (!preset) return "This tab’s preset is not available on the selected laser.";
     if (!preset.has_scan) return `“${preset.name}” has no calibration scan yet. Import one in Presets.`;
-    if (!tab.result) return tab.photoPath ? "Process this image with the saved preset." : null;
+    if (!tab.result) return tab.photoPath ? "Ready to process." : null;
     if (tab.resultKey !== presetKey(preset)) {
       return "The preset changed since this image was processed. Process it again.";
     }
@@ -300,11 +310,20 @@ export default function App() {
     }
   }
 
-  async function run(key: string, task: () => Promise<void>): Promise<boolean> {
+  async function run(key: string, task: () => Promise<void>, megapixels?: number): Promise<boolean> {
     if (busy()) return false;
     setFailure(null);
     setNotice(null);
     setWorking(key);
+    const duration = estimateMs(key, megapixels);
+    const started = Date.now();
+    let timer: number | undefined;
+    if (duration !== null) {
+      setOperationProgress({ label: WORKING_LABEL[key] ?? "Working", percentage: 0 });
+      timer = window.setInterval(() => {
+        setOperationProgress({ label: WORKING_LABEL[key] ?? "Working", percentage: Math.min(95, ((Date.now() - started) / duration) * 95) });
+      }, 80);
+    }
     try {
       await task();
       return true;
@@ -312,6 +331,11 @@ export default function App() {
       setFailure(errorText(error));
       return false;
     } finally {
+      if (timer !== undefined) window.clearInterval(timer);
+      if (duration !== null) {
+        setOperationProgress({ label: WORKING_LABEL[key] ?? "Working", percentage: 100 });
+        window.setTimeout(() => setOperationProgress(null), 140);
+      }
       setWorking(null);
     }
   }
@@ -477,7 +501,7 @@ export default function App() {
       const source = await bridge.scanSource(path);
       const geometry = geometryCache()[current.id] ?? await bridge.scanGeometry(current.id);
       setGeometryCache((cache) => ({ ...cache, [current.id]: geometry }));
-      setCropSession({ id: current.id, path, source });
+       setCropSession({ id: current.id, path, source, sourceMode: null });
     });
   }
 
@@ -490,7 +514,7 @@ export default function App() {
         geometryCache()[current.id] ? Promise.resolve(geometryCache()[current.id]) : bridge.scanGeometry(current.id),
       ]);
       setGeometryCache((cache) => ({ ...cache, [current.id]: geometry }));
-      setCropSession({ id: current.id, path: null, source });
+       setCropSession({ id: current.id, path: null, source, sourceMode: "current" });
     });
   }
 
@@ -501,12 +525,32 @@ export default function App() {
       adopt(
         session.path
           ? await bridge.importScanCrop(session.id, session.path, crop.x, crop.y, crop.width, crop.height)
-          : await bridge.importScanCropPreset(session.id, crop),
+          : session.sourceMode === "original"
+            ? await bridge.importScanCropSource(session.id, crop)
+            : await bridge.importScanCropPreset(session.id, crop),
         { keepDraft: true },
       );
       setCropSession(null);
       void refreshPresetPreview(session.id);
       void refreshScanGeometry(session.id);
+    });
+  }
+
+  function switchCropSource(mode: "original" | "current") {
+    const session = cropSession();
+    if (!session || session.path || session.sourceMode === mode) return;
+    setGeometryCache((cache) => {
+      const next = { ...cache };
+      delete next[session.id];
+      return next;
+    });
+    void run("scan-source", async () => {
+      const [source, geometry] = await Promise.all([
+        mode === "original" ? bridge.scanSourceOriginal(session.id) : bridge.scanSourcePreset(session.id),
+        bridge.scanGeometry(session.id),
+      ]);
+      setGeometryCache((cache) => ({ ...cache, [session.id]: geometry }));
+      setCropSession((current) => current?.id === session.id ? { ...current, source, sourceMode: mode } : current);
     });
   }
 
@@ -621,6 +665,7 @@ export default function App() {
   function reprocessImage() {
     const tab = activeTab();
     if (!tab?.photoPath || !tab.presetId) return;
+    const megapixels = tab.result ? (tab.result.width * tab.result.height) / 1_000_000 : undefined;
     void run("process", async () => {
       if (data()?.selected_preset !== tab.presetId) {
         throw "Select this tab’s preset before processing.";
@@ -630,7 +675,7 @@ export default function App() {
       const saved = data()?.presets.find((item) => item.id === tab.presetId) ?? null;
       updateTab(tab.id, { result, resultKey: saved ? presetKey(saved) : null });
       setNotice(`Processed ${result.width} × ${result.height} px with “${saved?.name ?? "preset"}”`);
-    });
+    }, megapixels);
   }
 
   function saveTabResult(kind: "engraving" | "simulation" | "report") {
@@ -730,6 +775,7 @@ export default function App() {
                     cropSource={cropSession()?.id === selectedPreset()?.id ? cropSession()!.source : null}
                     cropCanImport={!!cropSession()}
                     cropEditingSaved={!!cropSession() && cropSession()?.path === null}
+                    cropSourceMode={cropSession()?.sourceMode ?? null}
                     canEditScan={!!selectedPreset()?.has_scan}
                     onScope={selectLaser}
                     onSelect={selectPreset}
@@ -743,6 +789,7 @@ export default function App() {
                     onImportScan={importScan}
                     onEditScan={editScan}
                     onCropImport={importCroppedScan}
+                    onCropSource={switchCropSource}
                     onCropCancel={() => setCropSession(null)}
                     onRemoveScan={removeScan}
                     onExportGauge={exportGauge}
@@ -789,6 +836,13 @@ export default function App() {
                   </div>
                 </footer>
               </>
+            )}
+          </Show>
+          <Show when={operationProgress()}>
+            {(progress) => (
+              <div class="operation-progress">
+                <ProgressScreen label={progress().label} percentage={progress().percentage} />
+              </div>
             )}
           </Show>
         </main>

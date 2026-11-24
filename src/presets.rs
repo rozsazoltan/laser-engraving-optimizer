@@ -41,6 +41,8 @@ pub struct Preset {
     pub dpi: f64,
     #[serde(default)]
     pub calibration_photo: Option<String>,
+    #[serde(default)]
+    pub scan_source_photo: Option<String>,
 }
 
 impl Preset {
@@ -56,6 +58,7 @@ impl Preset {
             power_percent: 0.0,
             dpi: 0.0,
             calibration_photo: None,
+            scan_source_photo: None,
         }
     }
 }
@@ -112,6 +115,7 @@ impl LegacyPreset {
             power_percent: 0.0,
             dpi: 0.0,
             calibration_photo: self.calibration_photo,
+            scan_source_photo: None,
         }
     }
 }
@@ -396,6 +400,18 @@ impl PresetStore {
     }
 
     pub fn remove(&mut self, id: &str) -> Result<()> {
+        let old_source = self
+            .store
+            .presets
+            .iter()
+            .find(|p| p.id == id)
+            .and_then(|p| p.scan_source_photo.clone());
+        if old_source
+            .as_deref()
+            .is_some_and(|name| !safe_photo_name(name))
+        {
+            return Err(PresetError::Invalid("unsafe scan source photo name".into()));
+        }
         let old_photo = self
             .store
             .presets
@@ -415,6 +431,52 @@ impl PresetStore {
             return Err(e);
         }
         self.remove_unreferenced(old_photo);
+        self.remove_unreferenced_source(old_source);
+        Ok(())
+    }
+
+    pub fn keep_scan_source(&mut self, id: &str, source: impl AsRef<Path>) -> Result<()> {
+        let old_source = self
+            .store
+            .presets
+            .iter()
+            .find(|preset| preset.id == id)
+            .ok_or_else(|| PresetError::Invalid("preset does not exist".into()))?
+            .scan_source_photo
+            .clone();
+        let image = crate::processing::load_rgb(source.as_ref()).map_err(PresetError::Invalid)?;
+        let sources = self.root.join("sources");
+        fs::create_dir_all(&sources)?;
+        let photo_name = format!("{}.png", new_id());
+        let staging = sources.join(format!(".{}.tmp.png", new_id()));
+        if let Err(error) = image.save_with_format(&staging, image::ImageFormat::Png) {
+            let _ = fs::remove_file(&staging);
+            return Err(PresetError::Invalid(format!(
+                "scan source could not be saved: {error}"
+            )));
+        }
+        let target = sources.join(&photo_name);
+        if let Err(error) = fs::rename(&staging, &target) {
+            let _ = fs::remove_file(&staging);
+            return Err(error.into());
+        }
+        self.store
+            .presets
+            .iter_mut()
+            .find(|preset| preset.id == id)
+            .unwrap()
+            .scan_source_photo = Some(photo_name);
+        if let Err(error) = self.save() {
+            self.store
+                .presets
+                .iter_mut()
+                .find(|preset| preset.id == id)
+                .unwrap()
+                .scan_source_photo = old_source.clone();
+            let _ = fs::remove_file(&target);
+            return Err(error);
+        }
+        self.remove_unreferenced_source(old_source);
         Ok(())
     }
 
@@ -513,6 +575,11 @@ impl PresetStore {
         self.calibration_photo_path(preset)
     }
 
+    pub fn source_path(&self, preset: &Preset) -> Option<PathBuf> {
+        let name = preset.scan_source_photo.as_deref()?;
+        safe_photo_name(name).then(|| self.root.join("sources").join(name))
+    }
+
     pub fn archive_dir(&self) -> PathBuf {
         self.root.join("archived-scans")
     }
@@ -609,6 +676,19 @@ impl PresetStore {
             let _ = fs::remove_file(self.root.join("photos").join(name));
         }
     }
+
+    fn remove_unreferenced_source(&self, name: Option<String>) {
+        if let Some(name) = name.filter(|name| {
+            safe_photo_name(name)
+                && !self
+                    .store
+                    .presets
+                    .iter()
+                    .any(|preset| preset.scan_source_photo.as_deref() == Some(name))
+        }) {
+            let _ = fs::remove_file(self.root.join("sources").join(name));
+        }
+    }
 }
 
 fn migrate_legacy(legacy: LegacyStore) -> Store {
@@ -701,6 +781,14 @@ fn validate_preset(p: &Preset) -> Result<()> {
     {
         return Err(PresetError::Invalid(
             "unsafe calibration photo reference".into(),
+        ));
+    }
+    if p.scan_source_photo
+        .as_deref()
+        .is_some_and(|n| !safe_photo_name(n))
+    {
+        return Err(PresetError::Invalid(
+            "unsafe scan source photo reference".into(),
         ));
     }
     Ok(())
@@ -935,6 +1023,26 @@ mod tests {
             .import_calibration_photo(&id, &replacement)
             .unwrap();
         assert!(!old_photo.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn removing_preset_deletes_managed_original_source() {
+        let root = temp();
+        let source = root.join("picked.png");
+        image::RgbImage::from_pixel(80, 72, image::Rgb([12, 34, 56]))
+            .save(&source)
+            .unwrap();
+        let mut db = PresetStore::open(&root).unwrap();
+        let laser_id = db.add_laser("Laser", 0.0).unwrap().id.clone();
+        let preset = valid_preset("Source", &laser_id);
+        let id = preset.id.clone();
+        db.add(preset).unwrap();
+        db.keep_scan_source(&id, &source).unwrap();
+        let source_path = db.source_path(&db.presets()[0]).unwrap();
+        assert!(source_path.exists());
+        db.remove(&id).unwrap();
+        assert!(!source_path.exists());
         fs::remove_dir_all(root).unwrap();
     }
 

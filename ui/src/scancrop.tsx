@@ -1,4 +1,4 @@
-import { For, createSignal, onCleanup, onMount } from "solid-js";
+import { For, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import type { ScanGeometry, ScanSource } from "./types";
 
 type Crop = { x: number; y: number; width: number; height: number };
@@ -27,12 +27,14 @@ export function SampleOverlay(props: { geometry: ScanGeometry; class?: string })
 
 type Props = {
   source: ScanSource;
-  geometry: ScanGeometry;
+  geometry: ScanGeometry | null;
   targetWidth: number;
   targetHeight: number;
   busy: boolean;
   canImport: boolean;
   editingSaved: boolean;
+  sourceMode: "original" | "current" | null;
+  onSourceMode: (mode: "original" | "current") => void;
   onImport: (crop: Crop) => void;
   onCancel: () => void;
 };
@@ -55,11 +57,20 @@ function initialCrop(source: ScanSource, ratio: number): Crop {
   };
 }
 
+const fullCrop = (source: ScanSource): Crop => ({ x: 0, y: 0, width: source.width, height: source.height });
+
 export function ScanCropEditor(props: Props) {
   const ratio = () => props.targetWidth / props.targetHeight;
   const [crop, setCrop] = createSignal(initialCrop(props.source, ratio()));
   const [zoom, setZoom] = createSignal(1);
   const [drag, setDrag] = createSignal<{ mode: "move" | "resize"; px: number; py: number; crop: Crop } | null>(null);
+  createEffect(() => {
+    const source = props.source;
+    const mode = props.sourceMode;
+    setCrop(mode === "current" ? fullCrop(source) : initialCrop(source, ratio()));
+    setZoom(1);
+    setDrag(null);
+  });
   const closeOnEscape = (event: KeyboardEvent) => {
     if (event.key === "Escape" && !props.busy) props.onCancel();
   };
@@ -151,6 +162,10 @@ export function ScanCropEditor(props: Props) {
       <section class="scan-crop-editor" role="dialog" aria-modal="true" aria-label="Edit calibration scan">
       <header class="scan-editor-head">
         <div><span class="section-label">Calibration scan</span><h2>Edit crop</h2></div>
+        {props.editingSaved && <div class="source-switch" role="group" aria-label="Scan source">
+          <button type="button" class={props.sourceMode === "original" ? "active" : ""} aria-pressed={props.sourceMode === "original"} disabled={props.busy} onClick={() => props.onSourceMode("original")}>Original</button>
+          <button type="button" class={props.sourceMode === "current" ? "active" : ""} aria-pressed={props.sourceMode === "current"} disabled={props.busy} onClick={() => props.onSourceMode("current")}>Current scan</button>
+        </div>}
         <button type="button" class="btn" disabled={props.busy} onClick={props.onCancel}>Cancel</button>
       </header>
       <div class="crop-toolbar">
@@ -172,7 +187,7 @@ export function ScanCropEditor(props: Props) {
             onPointerUp={() => setDrag(null)}
             onPointerCancel={() => setDrag(null)}
           >
-            <SampleOverlay geometry={props.geometry} />
+            {props.geometry && <SampleOverlay geometry={props.geometry} />}
             <button
               type="button"
               class="crop-handle"
@@ -185,6 +200,9 @@ export function ScanCropEditor(props: Props) {
             />
           </div>
         </div>
+      </div>
+      <div class="crop-fields-head">
+        <span class="section-label">Source {props.source.width} × {props.source.height} px</span>
       </div>
       <div class="crop-fields">
         <label><span class="field-label">X (px)</span><input class="input mono" type="number" min="0" max={props.source.width} step="1" disabled={props.busy} value={crop().x} onInput={(event) => setPosition("x", Number(event.currentTarget.value))} /></label>

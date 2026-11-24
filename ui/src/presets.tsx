@@ -18,6 +18,7 @@ type Props = {
   cropSource: ScanSource | null;
   cropCanImport: boolean;
   cropEditingSaved: boolean;
+  cropSourceMode: "original" | "current" | null;
   canEditScan: boolean;
   onScope: (laserId: string) => void;
   onSelect: (id: string) => void;
@@ -31,6 +32,7 @@ type Props = {
   onImportScan: () => void;
   onEditScan: () => void;
   onCropImport: (crop: Crop) => void;
+  onCropSource: (mode: "original" | "current") => void;
   onCropCancel: () => void;
   onRemoveScan: () => void;
   onExportGauge: () => void;
@@ -392,15 +394,17 @@ export function PresetsArea(props: Props) {
         </Show>
       </div>
       </Show>
-      <Show when={props.cropSource && props.geometry && props.preset}>
+      <Show when={props.cropSource && props.preset}>
         {(session) => <ScanCropEditor
           source={props.cropSource!}
-          geometry={props.geometry!}
+          geometry={props.geometry}
           targetWidth={props.preset!.calibration.block_size * props.preset!.calibration.columns}
           targetHeight={props.preset!.calibration.block_size * props.preset!.calibration.rows}
           busy={props.busy}
           canImport={props.cropCanImport}
           editingSaved={props.cropEditingSaved}
+          sourceMode={props.cropSourceMode}
+          onSourceMode={props.onCropSource}
           onImport={props.onCropImport}
           onCancel={props.onCropCancel}
         />}
