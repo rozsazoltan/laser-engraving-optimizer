@@ -15,6 +15,8 @@ import {
   type CalibrationSpec,
   type DocTab,
   type Draft,
+  type JobEntry,
+  type Preset,
   type ProcessResult,
   type PresetPreview,
   type ProcessingSettings,
@@ -89,8 +91,8 @@ function createTab(presetId: string | null): DocTab {
     title: "New image",
     presetId,
     photoPath: null,
-    result: null,
-    resultKey: null,
+    entries: [],
+    index: -1,
   };
 }
 
@@ -241,22 +243,28 @@ export default function App() {
 
   const tabResult = createMemo<ProcessResult | null>(() => {
     const tab = activeTab();
-    const preset = tabPreset();
-    if (!tab?.result || !tab.resultKey || !preset) return null;
-    return presetKey(preset) === tab.resultKey ? tab.result : null;
+    const entry = tab?.entries[tab.index];
+    return entry?.result ?? null;
   });
 
   const staleReason = createMemo<string | null>(() => {
     const tab = activeTab();
     if (!tab) return null;
     if (!tab.presetId) return "Pick a preset for this tab to start.";
-    const preset = tabPreset();
-    if (!preset) return "This tab’s preset is not available on the selected laser.";
+    const entry = tab.entries[tab.index];
+    if (!entry) {
+      const preset = tabPreset();
+      if (!preset) return "This tab’s preset is not available on the selected laser.";
+      if (!preset.has_scan) return `“${preset.name}” has no calibration scan yet. Import one in Presets.`;
+      return tab.photoPath ? "Ready to process." : null;
+    }
+    const preset = data()?.presets.find((item) => item.id === entry.presetId);
+    if (!preset || preset.laser_id !== data()?.selected_laser) return "This result’s preset is not available on the selected laser.";
     if (!preset.has_scan) return `“${preset.name}” has no calibration scan yet. Import one in Presets.`;
-    if (!tab.result) return tab.photoPath ? "Ready to process." : null;
-    if (tab.resultKey !== presetKey(preset)) {
+    if (entry.resultKey !== presetKey(preset)) {
       return "The preset changed since this image was processed. Process it again.";
     }
+    if (tab.presetId !== entry.presetId) return `Viewing a result made with “${entry.presetName}”. Reprocess to use “${tabPreset()?.name ?? "this tab’s preset"}”.`;
     if (data()?.selected_preset !== tab.presetId) {
       return "Another preset is selected in this window. Use this tab’s preset before saving.";
     }
@@ -273,13 +281,13 @@ export default function App() {
       list.map((tab) => {
         if (!tab.presetId) {
           if (!next.selected_preset) return tab;
-          return { ...tab, presetId: next.selected_preset, result: null, resultKey: null };
+          return { ...tab, presetId: next.selected_preset };
         }
         const found = next.presets.find(
           (item) => item.id === tab.presetId && item.laser_id === next.selected_laser,
         );
         if (found) return tab;
-        return { ...tab, presetId: next.selected_preset, result: null, resultKey: null };
+        return { ...tab, presetId: next.selected_preset };
       }),
     );
   }
@@ -632,10 +640,10 @@ export default function App() {
       }
     };
 
-    if (tab.photoPath || tab.result) {
+    if (tab.photoPath || tab.entries.length) {
       setPending({
         title: `Discard “${tab.title}”?`,
-        body: "This tab’s chosen image and processed result are dropped. Presets are not affected.",
+        body: "This tab’s chosen image and result history are dropped. Presets are not affected.",
         confirm: "Discard tab",
         danger: true,
         run: apply,
@@ -649,7 +657,7 @@ export default function App() {
     const tab = activeTab();
     if (!tab) return;
     switchPreset(presetId, () => {
-      updateTab(tab.id, { presetId, result: null, resultKey: null });
+      updateTab(tab.id, { presetId });
     });
   }
 
@@ -671,13 +679,13 @@ export default function App() {
       }
       updateTab(tab.id, {
         photoPath: path,
-        result: null,
-        resultKey: null,
+        entries: [],
+        index: -1,
         title: tab.title === "New image" ? titleFromPath(path) : tab.title,
       });
       const result = await bridge.processPhoto(tab.id, path);
       const saved = data()?.presets.find((item) => item.id === tab.presetId) ?? null;
-      updateTab(tab.id, { result, resultKey: saved ? presetKey(saved) : null });
+      if (saved) appendJob(tab, path, result, saved);
       setNotice(`Processed ${result.width} × ${result.height} px with “${saved?.name ?? "preset"}”`);
     });
   }
@@ -685,23 +693,42 @@ export default function App() {
   function reprocessImage() {
     const tab = activeTab();
     if (!tab?.photoPath || !tab.presetId) return;
-    const megapixels = tab.result ? (tab.result.width * tab.result.height) / 1_000_000 : undefined;
+    const current = tab.entries[tab.index]?.result;
+    const megapixels = current ? (current.width * current.height) / 1_000_000 : undefined;
     void run("process", async () => {
       if (data()?.selected_preset !== tab.presetId) {
         throw "Select this tab’s preset before processing.";
       }
-      updateTab(tab.id, { result: null, resultKey: null });
       const result = await bridge.processPhoto(tab.id, tab.photoPath!);
       const saved = data()?.presets.find((item) => item.id === tab.presetId) ?? null;
-      updateTab(tab.id, { result, resultKey: saved ? presetKey(saved) : null });
+      if (saved) appendJob(tab, tab.photoPath!, result, saved);
       setNotice(`Processed ${result.width} × ${result.height} px with “${saved?.name ?? "preset"}”`);
     }, megapixels);
   }
-
+  function appendJob(tab: DocTab, photoPath: string, result: ProcessResult, preset: Preset) {
+    const entry: JobEntry = {
+      presetId: preset.id,
+      presetName: preset.name,
+      photoPath,
+      result,
+      resultKey: presetKey(preset),
+      at: Date.now(),
+    };
+    setTabs((list) => list.map((item) => item.id === tab.id
+      ? { ...item, entries: [...item.entries, entry], index: item.entries.length }
+      : item));
+  }
+  function moveHistory(direction: -1 | 1) {
+    const tab = activeTab();
+    if (!tab?.entries.length) return;
+    const index = Math.max(0, Math.min(tab.entries.length - 1, tab.index + direction));
+    if (index !== tab.index) updateTab(tab.id, { index });
+  }
   function saveTabResult(kind: "engraving" | "simulation" | "report") {
     const tab = activeTab();
-    if (!tab?.result) return;
-    if (data()?.selected_preset !== tab.presetId) {
+    const entry = tab?.entries[tab.index];
+    if (!tab || !entry || tab.index !== tab.entries.length - 1 || !tabResult() || staleReason()) return;
+    if (entry.presetId !== tab.presetId || data()?.selected_preset !== tab.presetId) {
       setFailure("Select this tab’s preset before saving.");
       return;
     }
@@ -725,6 +752,10 @@ export default function App() {
   onMount(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") setPending(null);
+      if (!event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key) || area() !== "engrave") return;
+      if ((event.target as HTMLElement).closest("input, textarea, select, [contenteditable='true']")) return;
+      event.preventDefault();
+      moveHistory(event.key === "ArrowLeft" ? -1 : 1);
     };
     window.addEventListener("keydown", onKeyDown);
     onCleanup(() => window.removeEventListener("keydown", onKeyDown));
@@ -828,6 +859,10 @@ export default function App() {
                     preset={tabPreset()}
                     presetSelected={presetSelected()}
                     result={tabResult()}
+                    historyIndex={activeTab()?.index ?? -1}
+                    historyCount={activeTab()?.entries.length ?? 0}
+                    historyEntry={activeTab()?.entries[activeTab()?.index ?? -1] ?? null}
+                    isLatest={!!activeTab() && activeTab()!.index === activeTab()!.entries.length - 1}
                     staleReason={staleReason()}
                     busy={busy()}
                     working={working()}
@@ -836,6 +871,8 @@ export default function App() {
                     onUsePreset={useTabPreset}
                     onChoose={chooseImage}
                     onReprocess={reprocessImage}
+                    onPrevious={() => moveHistory(-1)}
+                    onNext={() => moveHistory(1)}
                     onSave={saveTabResult}
                     onOpenPresets={() => setArea("presets")}
                     onOpenLasers={() => setArea("lasers")}

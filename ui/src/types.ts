@@ -64,14 +64,23 @@ export type ProcessResult = {
 /** Editable part of a preset. */
 export type Draft = Pick<Preset, "name" | "note" | "calibration" | "processing" | "speed" | "power_percent" | "dpi">;
 
-/** One document tab: its own image, preset choice and processed result. */
+export type JobEntry = {
+  presetId: string;
+  presetName: string;
+  photoPath: string;
+  result: ProcessResult;
+  resultKey: string;
+  at: number;
+};
+
+/** One document tab: its own image, preset choice and processing history. */
 export type DocTab = {
   id: string;
   title: string;
   presetId: string | null;
   photoPath: string | null;
-  result: ProcessResult | null;
-  resultKey: string | null;
+  entries: JobEntry[];
+  index: number;
 };
 
 export type Area = "lasers" | "presets" | "engrave" | "faq";

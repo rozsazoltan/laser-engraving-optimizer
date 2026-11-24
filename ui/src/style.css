@@ -1113,6 +1113,40 @@ select.input {
   flex-direction: column;
   gap: 10px;
 }
+.history-toolbar,
+.history-nav {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.history-toolbar {
+  justify-content: space-between;
+  gap: 12px;
+}
+.history-nav {
+  gap: 4px;
+}
+.history-step {
+  margin-left: 5px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-note {
+  flex: none;
+  margin: 0;
+}
+.previews-historical .preview {
+  outline: 1px solid #343434;
+  outline-offset: -1px;
+  opacity: 0.78;
+}
+.re-engrave svg {
+  width: 14px;
+  height: 14px;
+}
 
 .engrave-warning {
   flex: none;

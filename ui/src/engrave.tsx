@@ -1,6 +1,6 @@
 import { For, Show } from "solid-js";
 import { Field } from "./fields";
-import type { DocTab, Preset, ProcessResult } from "./types";
+import type { DocTab, JobEntry, Preset, ProcessResult } from "./types";
 
 const baseName = (path: string) => path.split(/[\\/]/).pop() || path;
 
@@ -30,7 +30,7 @@ export function DocStrip(props: StripProps) {
                 disabled={props.busy}
                 onClick={() => props.onActivate(tab.id)}
               >
-                <Show when={tab.photoPath || tab.result}>
+                <Show when={tab.photoPath || tab.entries.length}>
                   <span class="doc-mark" aria-hidden="true" />
                 </Show>
                 <span class="doc-name">{tab.title}</span>
@@ -96,6 +96,10 @@ type EngraveProps = {
   preset: Preset | null;
   presetSelected: boolean;
   result: ProcessResult | null;
+  historyIndex: number;
+  historyCount: number;
+  historyEntry: JobEntry | null;
+  isLatest: boolean;
   staleReason: string | null;
   busy: boolean;
   working: string | null;
@@ -104,6 +108,8 @@ type EngraveProps = {
   onUsePreset: () => void;
   onChoose: () => void;
   onReprocess: () => void;
+  onPrevious: () => void;
+  onNext: () => void;
   onSave: (kind: "engraving" | "simulation" | "report") => void;
   onOpenPresets: () => void;
   onOpenLasers: () => void;
@@ -115,7 +121,9 @@ export function EngraveArea(props: EngraveProps) {
   const canProcess = () =>
     !props.busy && !!tab()?.presetId && props.preset?.has_scan === true && props.presetSelected;
 
-  const canSave = () => !!props.result && !props.busy && props.presetSelected;
+  const canSave = () => !!props.result && !props.busy && props.presetSelected && props.isLatest && !props.staleReason;
+  const historical = () => props.historyCount > 0 && !props.isLatest;
+  const canReprocess = () => canProcess() && !!tab()?.photoPath;
 
   const emptyText = () =>
     props.staleReason ? "Waiting for a processed image." : "Choose an image to engrave.";
@@ -190,11 +198,6 @@ export function EngraveArea(props: EngraveProps) {
                     ? "Choose another…"
                     : "Choose image…"}
               </button>
-              <Show when={tab()?.photoPath && !props.result}>
-                <button type="button" class="btn" disabled={!canProcess()} onClick={props.onReprocess}>
-                  Process again
-                </button>
-              </Show>
             </div>
             <p class="hint">PNG, JPG, WebP, BMP, or TIFF. Convert HEIC photos first.</p>
 
@@ -226,11 +229,35 @@ export function EngraveArea(props: EngraveProps) {
           </aside>
 
           <div class="engrave-main">
+            <div class="history-toolbar" aria-label="Result history">
+              <div class="history-nav">
+                <button type="button" class="icon-btn" aria-label="Previous result" title="Previous result (Alt+Left)"
+                  disabled={props.busy || props.historyIndex <= 0} onClick={props.onPrevious}>
+                  <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M7.5 2.5 4 6l3.5 3.5" /></svg>
+                </button>
+                <button type="button" class="icon-btn" aria-label="Next result" title="Next result (Alt+Right)"
+                  disabled={props.busy || props.historyIndex >= props.historyCount - 1} onClick={props.onNext}>
+                  <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m4.5 2.5 3.5 3.5-3.5 3.5" /></svg>
+                </button>
+                <span class="history-step mono">
+                  {props.historyEntry
+                    ? `Result ${props.historyIndex + 1} / ${props.historyCount} · preset ${props.historyEntry.presetName} · ${new Date(props.historyEntry.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`
+                    : "No results yet"}
+                </span>
+              </div>
+              <button type="button" class="icon-btn re-engrave" aria-label="Re-engrave" title="Re-engrave"
+                disabled={!canReprocess()} onClick={props.onReprocess}>
+                <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M9.5 4A3.8 3.8 0 0 0 3 2.8L2 4M2 4V1.8M2 4h2.2M2.5 8A3.8 3.8 0 0 0 9 9.2L10 8m0 0v2.2M10 8H7.8" /></svg>
+              </button>
+            </div>
+            <Show when={historical()}>
+              <p class="hint warn history-note">Viewing an earlier result. Saves are disabled until you return to the latest result.</p>
+            </Show>
             <Show when={props.staleReason}>
               {(reason) => <p class="hint warn engrave-warning">{reason()}</p>}
             </Show>
 
-            <div class="previews">
+            <div class={`previews ${historical() ? "previews-historical" : ""}`}>
               <Preview
                 title="Engraving"
                 tag={props.result ? `${props.result.width} × ${props.result.height}` : "—"}
@@ -239,7 +266,7 @@ export function EngraveArea(props: EngraveProps) {
               />
               <Preview
                 title="Simulation"
-                tag={props.preset ? props.preset.name : "—"}
+                tag={props.historyEntry?.presetName ?? "—"}
                 src={props.result?.simulation_data_url}
                 empty={emptyText()}
               />
@@ -253,7 +280,7 @@ export function EngraveArea(props: EngraveProps) {
                   disabled={!canSave()}
                   onClick={() => props.onSave("engraving")}
                 >
-                  {props.working === "save-engraving" ? "Saving…" : "Save engraving PNG…"}
+                {props.working === "save-engraving" ? "Saving…" : "Save engraving PNG…"}
                 </button>
                 <button
                   type="button"
