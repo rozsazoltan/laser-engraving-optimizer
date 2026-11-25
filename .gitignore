@@ -1,3 +1,7 @@
 /.planning/
 /target/
 /.slim/deepwork/
+
+/ui/node_modules/
+/ui/dist/
+/gen/

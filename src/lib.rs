@@ -1,6 +1,6 @@
 //! Bounded, pure-Rust image processing core for laser engraving.
-pub mod app;
 pub mod calibration;
+pub mod host;
 pub mod presets;
 pub mod processing;
 

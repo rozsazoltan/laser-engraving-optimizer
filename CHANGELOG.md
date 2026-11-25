@@ -15,22 +15,62 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   persistence and failure safety, and desktop interaction state.
 - Local wood-background calibration for every engraved gauge patch.
 - Monotonic laser-response fitting and stable inverse tone mapping.
-- Calibration diagnostics in `calibration_report.csv` and `calibration_curve.png`.
-- Calibration report CSV and simulation PNG export from the desktop application.
-- Optional `--curve-exponent`, `--gamma`, `--clahe`, and `--color-method` parameters.
-- Optional linear tone spacing for calibration gauges (`--curve-exponent 1.0`).
+- Calibration report CSV export from the desktop application.
+- Tauri 2 desktop window named `engraving` with a SolidJS frontend and a startup
+  loading screen.
+- Laser registry for the owned machines; every preset belongs to one laser, and a
+  laser that still owns presets cannot be removed.
+- Separate Lasers, Presets, and Engrave areas, with one document tab per image so
+  several images can be prepared in the same window.
+- Store schema 2 for lasers and laser-bound presets, with a one-time migration of
+  existing presets onto a generated laser.
+- Input photos in PNG, JPEG, WebP, BMP, and TIFF.
+- Laser wattage, shown as `name 40W`, with the preset power percentage resolved
+  to the resulting wattage in brackets.
+- Preset recording settings: engraving speed (mm/s), power (%), and DPI.
+- Side-by-side calibration scan and sample gauge previews in the Presets area.
+- Archived calibration scans with readable names, plus open and empty archive
+  commands.
+- Presets can archive their own scan from the preview; the preset stays saved
+  without a scan, is flagged in the list, and refuses to process until a new scan
+  is imported.
+- Sampled-pixel overlay on both calibration previews, and a crop editor on scan
+  import with a fixed gauge frame: the image pans, rotates, zooms and takes
+  arrow-key nudges while the imported X/Y/W/H rectangle stays readable.
+- The crop frame can be dragged past the photo edge; the frame turns red and the
+  missing area is imported as black.
+- Perspective correction in the scan editor: four draggable corners are warped
+  onto the gauge size, so a photo taken at an angle still yields a usable scan.
+- The crop settings are stored with the preset, so the **Original** source
+  reopens the untouched photo with the saved rotation, zoom, pan and corners.
+- Operation feedback at the action and in the status bar for file selection,
+  imports, processing, preset and laser changes, deletion, archives and exports.
+  The crop editor shows its own pending and error states.
 - Creality Falcon2 Pro S 22W calibration instructions.
 
 ### Changed
 - Simulator uses the same fitted response as the optimizer.
 - Replaced the Python runtime and OpenCV dependency with a self-contained Rust build.
+- Desktop frontend moved from the embedded egui interface to a Tauri webview that
+  embeds the SolidJS build from `ui/dist`.
+- Calibration presets are bound to a laser, and the laser selection scopes which
+  presets are visible.
+- Startup screen shows a grey `engraving` wordmark with Autark's whitish sheen
+  animation, a 0-100% readout, and a determinate gold loading bar.
+- Photo processing uses non-blocking, indeterminate feedback instead of a
+  full-screen overlay with a time-estimated percentage.
 
 ### Removed
 - Python reference scripts, `requirements.txt`, and the Python toolchain pin;
   committed numerical fixtures preserve their behaviour as test references.
+- `--curve-exponent`, `--gamma`, `--clahe`, and `--color-method` command-line
+  parameters, and the Python `calibration_curve.png` output.
 
 ### Fixed
 - Incorrect whole-image white reference affected by illumination gradient.
 - White-reference sample rectangle extending into engraved cells.
 - Unstable cubic polynomial fitting and non-monotonic power interpolation.
 - Loss of almost all test patches caused by an arbitrary brightness-difference threshold.
+- The window no longer freezes while a photo is processed, a calibration scan is
+  imported, or a result is saved; state, disk, and image commands run on dedicated
+  blocking workers rather than the window thread or async executor.
